@@ -208,3 +208,55 @@ T0_3_REL_ERR_PERCENTILE = 90       # upper percentile of the relative error repo
 T0_3_LOG_OFFSET = 1e-6             # log10(value + offset) correlation offset [particles/m^3] (float16 slab resolution ~6e-8 at 1e-4) [plan D2]
 T0_4_FRAME_INDICES = (400, 500, 599)   # snapshot growth table indices (steps 25025 / 27525 / 30000) [plan S0 T0-4]
 T0_4_EXPECTED_GROWTH_TOTAL = 1.46  # plan S0 T0-4 / 슬라이드 6 각주: total airborne count 599/400 expected about +46% [계산, plan S0]
+
+# --------------------------------------------------------------------------------------
+# Sensor model details  [plan 4.1; sensor/detector.py, validate_detector]  (appended D3)
+# --------------------------------------------------------------------------------------
+SENSOR_REF_DENSITY = 600.0 / LATTICE_CELL_VOLUME   # 38.4 particles/m^3 = max field concn ~600 / 15.625 (plan 4.1 "38 입자/m³") [계산, plan 4.1]
+SENSOR_Y_MAX = (max(SENSOR_SCALE_RANGE) * SENSOR_K0 * SENSOR_REF_DENSITY + SENSOR_BACKGROUND_CPS) * SENSOR_T   # ~3,050 counts: policy input log1p(y)/log1p(y_max) [계산, plan 4.1]
+SENSOR_CURRIE_K = 3.0          # Currie-type decision threshold b + k*sqrt(b*T)/T (R4; plan 4.1: 20 + 13.4 ~ 33 cps) [plan 4.1]
+VALIDATE_DETECTOR_DOWNWIND_M = (50.0, 200.0)   # validate_detector: +x offsets from each source at which expected counts are reported [plan D3]
+VALIDATE_DETECTOR_N_POISSON = 100_000          # validate_detector / test_detector: Poisson sample size for the 1% mean check [plan D3]
+VALIDATE_DETECTOR_MEAN_TOL = 0.01              # relative tolerance of the empirical Poisson mean [plan D3]
+
+# --------------------------------------------------------------------------------------
+# Analytic forward model (Gaussian plume)  [plan 4.2; pf/forward_model.py; validate_forward]  -- appended D3
+# --------------------------------------------------------------------------------------
+FWD_DEFAULT_U = WIND_REF_PLUME_U_10_15                             # 1.68 m/s: plume-region mean u, 10-15 m band [측정 3.3]
+FWD_U_CANDIDATES = (1.68, 2.96, 3.69)                              # 10-15 m band / 20-25 m band / global 10-30 m layer mean [plan 4.2]
+FWD_DEFAULT_SIGMA_V = 0.5                                          # sqrt(2k/3) turbulent velocity scale [m/s] [plan 4.2]
+FWD_SIGMA_V_CANDIDATES = (0.3, 0.5, 0.9)                           # T1-3 calibration candidates [plan 4.2]
+FWD_T_L = 9.5                                                      # Lagrangian time scale k/epsilon ~ 9-10 s [측정 2.1]
+FWD_SIGMA_Z_RATIO = 0.6                                            # sigma_z = 0.6 * sigma_y [plan 4.2 선택]
+FWD_G_FLOOR = 1e-9                                                 # unit response where d <= 0 (and lower clip) [plan 4.2]
+FWD_TIMING_N_HYPOTHESES = PF_N_PARTICLES                           # 2000 hypotheses in the D3 timing target [plan 4.3]
+FWD_TIMING_N_DRONES = (2, 1)                                       # drone counts timed by validate_forward [plan D3]
+FWD_TIMING_N_CALLS = 100                                           # median over this many calls [plan D3]
+FWD_TIMING_TARGET_S = 1e-3                                         # D3 pass criterion: (2000 x 2) unit_response < 1 ms [plan D3]
+FWD_VALIDATE_SOURCES = (109, 110)                                  # open (109) vs trapped (110) source, report 2.6 [plan D3]
+FWD_VALIDATE_D_M = (25.0, 50.0, 100.0, 200.0, 400.0)               # +x centreline downwind distances compared to the slab [plan D3]
+FWD_VALIDATE_FRAME_INDEX = N_FILES - 1                             # index 599 = step 30000 [plan D3]
+Q_RELEASE_A = PARTICLES_PER_INDEX_STEP_PER_SOURCE / SEC_PER_INDEX_STEP   # 266.6 particles/s actual release rate under interpretation A [계산]
+
+# --------------------------------------------------------------------------------------
+# Figure 2(a) deposited-particle effect  [plan S0 그림 2(a), 슬라이드 5; scripts/fig_data.py]  -- appended D3
+# --------------------------------------------------------------------------------------
+FIG_DATA_FRAME_INDEX = N_FILES - 1                                 # index 599 = step 30000 [plan S0]
+FIG_DATA_Z_LEVELS = (0.5, 1.0, 2.5, 5.0, 7.5, 10.0, 15.0)          # query heights [m]; deposited particles (z = DEPOSIT_Z, report 2.4) reach at most KERNEL_H = 7.5 m [계산]
+FIG_DATA_RATIO_LOG_DECADES = 2.0                                   # heatmap colour scale of the with/without ratio spans [1, 10^2] [plan S0]
+
+# --------------------------------------------------------------------------------------
+# RB-PF details  [plan 4.3, 4.5; pf/particle_filter.py; validate_kappa_grid]  -- appended D3 (particle_filter)
+# --------------------------------------------------------------------------------------
+PF_ENTROPY_CELL_M = 20.0            # entropy / weighted-mode histogram cell of the PF belief [m] (plan 4.5 reward: 20 m cells) [plan 4.5]
+PF_NB_ALPHA0 = 1.0                  # Gamma prior shape of the b = 0 NB path, alpha_0 = 1, beta_0 = 1/KAPPA_REF (plan 4.3) [plan 4.3]
+PF_RESAMPLE_NEFF_FRACTION = 0.5     # systematic resampling when N_eff < 0.5 N (plan 4.3 "N_eff < N/2") [plan 4.3]
+PF_JITTER_MAX_TRIES = 10            # re-draws of a jittered particle that leaves the prior box / hits a building, then keep the parent [plan 4.3]
+PF_RESET_MAX_ROUNDS = 100           # rejection-sampling rounds of the uniform prior over free cells before giving up [계산]
+PF_MAP_TOP_FRACTION = 0.05          # map_estimate(method="top"): weighted mean of the top 5 % particles by weight [plan 4.3]
+PF_TIMING_N_UPDATES = 1000          # validate_kappa_grid: number of RBPF.update calls timed (N = PF_N_PARTICLES, G = KAPPA_G) [plan D3]
+PF_UPDATE_TIME_TARGET_S = 1e-3      # D3 pass criterion on the median grid update (expected 1e-4..3e-4 s) [plan D3]
+T1_2B_MIN_MARGIN_DECADES = 1.0      # T1-2b: nominal kappa ranges must sit >= 1 decade inside both grid ends [plan T1-2b]
+T1_2B_GRID_ROUND_DECADES = 0.5      # recommended grid_decades is rounded up to this step (plan: ±3 decade fallback, G = 31) [plan T1-2b]
+T1_2B_MISMATCH_DECADES = 0.9        # informational extra: trapped-source model mismatch up to 8x ~ 0.9 decade (report 2.6) [plan 4.3]
+Q_RELEASE_B = PARTICLES_PER_INDEX_STEP_PER_SOURCE / DT_LDM_SECONDS   # 26.66 particles/s actual release rate under interpretation B (index step = 0.25 s) [계산]

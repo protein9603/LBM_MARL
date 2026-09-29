@@ -20,6 +20,8 @@
 | R12 | 파라미터 공유 다중 에이전트 정책 학습 | Gupta, J. K., Egorov, M., Kochenderfer, M. (2017), "Cooperative Multi-agent Control Using Deep Reinforcement Learning", AAMAS 2017 Workshops (LNAI 10642) | `env/multi_agent.py`, `rl/ppo.py` — 한 정책이 모든 드론의 경험을 학습 | 20일 내 구현 가능한 가장 단순한 MARL 형태 | 기억 기반 | 2026-09-29 |
 | R13 | Gaussian plume(지면 반사 포함) 전방 모델 | 표준 대기확산 교과서, 예: Seinfeld, J. H. & Pandis, S. N., Atmospheric Chemistry and Physics (3rd ed.), Ch. 18 | `pf/forward_model.py` — PF 우도의 해석적 예측 | 연속 소스 가설을 빠르게 평가; STE 문헌(R3, R7)이 같은 계열 모델을 사용 | 기억 기반 | 2026-09-29 |
 | R14 | Legacy VTK 파일 형식(BINARY big-endian, POLYDATA, FIELD) | Kitware, "VTK File Formats" (docs.vtk.org) | `io/ldm_reader.py` | 데이터 파일 형식 그 자체 | 확인(공식 문서) | 2026-09-29 |
+| R15 | Taylor 확산 이론: 라그랑지안 속도 상관에 의한 횡풍 분산 σ_y² = 2σ_v²T_L²(t/T_L − 1 + e^{−t/T_L}) → 근거리 σ_v²t², 원거리 2σ_v²T_L t | Taylor, G. I. (1921), "Diffusion by continuous movements", Proc. London Math. Soc. s2-20(1):196–212 | `pf/forward_model.py` GaussianPlume.sigma_y: 두 극한을 잇는 대수형 σ_y² = σ0² + (σ_v d/U)²/(1 + d/(2U T_L)) (t = d/U, 설계 선택; plan 4.2) | LBM 난류 통계(k, ε → σ_v, T_L; 보고서 2.1)로 σ_y를 직접 정하기 위해. Pasquill-Gifford 계급은 도시 협곡·LBM 스케일에 맞지 않음 | 기억 기반 | 2026-09-30 |
+| R16 | Systematic resampling(층화 균등 난수 u_i = (u + i)/N로 누적가중 역변환) | Kitagawa, G. (1996), "Monte Carlo filter and smoother for non-Gaussian nonlinear state space models", J. Comput. Graph. Stat. 5(1):1–25; Douc, R., Cappé, O., Moulines, E. (2005), "Comparison of resampling schemes for particle filtering", ISPA 2005 | `pf/particle_filter.py` RBPF.resample_and_jitter (N_eff < N/2일 때, 계획 4.3) | 다항 리샘플링보다 분산이 작고 O(N)·벡터화가 쉬운 표준 방식 | 기억 기반 | 2026-09-30 |
 
 ## 후속 기록 규칙
 - 새 방법을 코드에 넣을 때 행을 추가하고 커밋 메시지에 `refs: R#`을 적습니다.
