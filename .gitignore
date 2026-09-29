@@ -1,0 +1,37 @@
+# virtual environments
+.venv/
+.venv*/
+venv/
+
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+
+# logs / local outputs (large or regenerable)
+*.log
+cache/
+outputs/
+runs/
+checkpoints/
+
+# raw simulation data never lives in this repo
+*.vtk
+*.stl
+
+# large derived arrays (regenerable from data); small test fixtures are whitelisted
+*.npz
+*.npy
+*.h5
+*.hdf5
+!tests/fixtures/*.npz
+
+# editors / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
