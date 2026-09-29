@@ -142,3 +142,69 @@ DRONE_STEP_M = 5.0
 BUILDING_MARGIN_M = 2.0
 SUCCESS_SIGMA_M = 15.0
 SUCCESS_ERROR_M = 20.0
+
+# --------------------------------------------------------------------------------------
+# Concentration-field query backend  [plan 3 S0 T0-5, docs/data_cache.md]
+# --------------------------------------------------------------------------------------
+FRAME_P_TYPE_OFFSET = 100      # frames/frame_XXX.npz stores p_type - 100 as uint8 (convert_ldm.py, data_cache.md)
+FIELD_MAX_CACHED_FRAMES = 8    # LRU size of float32 slab frames held by LdmSlabBackend (float32: 2.15 MB per z level, 6.5 MB per 3-level frame) [계산]
+T0_5_QUERY_LATENCY_S = 1e-4    # T0-5 pass criterion: one cached slab query < 0.1 ms [plan 3 S0]
+
+# --------------------------------------------------------------------------------------
+# LBM wind field lookup  [측정 3.1, 3.3, 3.6; field/wind.py]
+# --------------------------------------------------------------------------------------
+WIND_AXIS_ORDER = "level,ix,iy,comp"   # levels_uvw.npz / fluid_slices_2p5m.npz uvw[i, ix, iy, c]: x = x[ix], y = y[iy] [측정, validate_wind]
+PLUME_REGION_X = (330.0, 1315.0)       # plume-region window of the report 3.3 band means: OPEN interval 330 < x < 1315 (v14_fluid_src_velocity_k.py) [측정 3.3]
+PLUME_REGION_Y = (-500.0, 500.0)       # |y| < 500, open interval (nodes at y = +-500 excluded) [측정 3.3]
+WIND_REF_MEAN_U = {1.25: 1.146, 11.25: 2.652, 21.25: 3.825, 48.75: 6.528, 363.75: 10.136}   # whole-level horizontal mean u [m/s] [측정 3.3]
+WIND_REF_INFLOW_U = {1.25: 3.39, 6.25: 4.60, 16.25: 5.52}   # inflow column x=0 mean u [m/s] [측정 3.3]
+WIND_REF_PLUME_U_10_15 = 1.68          # plume-region mean u, 10-15 m band, all lattice nodes [m/s] [측정 3.3]
+WIND_REF_PLUME_U_BANDS = {(0.0, 5.0): 0.82, (10.0, 15.0): 1.68, (20.0, 25.0): 2.96}   # plume-region mean u per z band [lo, hi) over ALL lattice nodes (stored levels inside the band: 1.25/3.75, 11.25/13.75, 21.25/23.75) [측정 3.3]
+WIND_TOL_PLUME_U = 5e-3                # validate_wind tolerance on the band means (report quotes 2 decimals; v14 exact values 0.8197/1.6817/2.9564) [plan D2]
+WIND_REF_SOURCE_SPEED_RANGE = (0.3, 3.8)   # loose expectation for the 15 m wind speed at the 13 sources (informational only) [plan D2]
+WIND_REF_SOURCE_SPEED = {103: 0.33, 107: 0.63, 109: 3.79, 110: 0.43}   # "근방 풍속" of report 2.6 = mean |(u,v,w)| over ALL lattice nodes with |x-xs| < 15, |y-ys| < 15, 2 < z < 15 (v14_fluid_src_velocity_k.py) [측정 2.6]
+WIND_REF_SOURCE_BOX_HALF_M = 15.0      # half-width of that near-source box [m] (report 2.6 / v14) [측정 2.6]
+WIND_REF_SOURCE_Z_RANGE = (2.0, 15.0)  # open z interval of that box -> stored levels 3.75 ... 13.75 [측정 2.6]
+WIND_REF_SOURCE_Z = 6.25               # stored level nearest the release height (~5.5 m, report 2.6) used for the informational point-sample speeds [추정]
+WIND_TOL_SOURCE_SPEED = 1e-2           # validate_wind tolerance on the near-source box-mean speeds [m/s] (report quotes 2 decimals) [plan D2]
+WIND_TOL_MEAN_U = 1e-3                 # validate_wind pass tolerance on the level means [m/s] [plan D2]
+WIND_TOL_INFLOW_U = 0.1                # validate_wind pass tolerance on the inflow column mean [m/s] [plan D2]
+
+# --------------------------------------------------------------------------------------
+# Obstacle map / drone kinematics  [측정 4.1-4.3; plan 4.5; env/drone.py, validate_drone]
+# --------------------------------------------------------------------------------------
+OCC_AXIS_ORDER = "ix,iy"               # occupancy_2m_flowframe.npz occ/hmap[ix, iy]: x = x0 + ix*res, y = y0 + iy*res (stl_tools cell convention) [측정, validate_drone]
+OCC_HMAP_NO_BUILDING = 0.0             # hmap value where there is no building; occ == (hmap > 0) on all 51,471 cells [측정, validate_drone]
+BUILDING_BBOX_X = (200.0, 1117.0)      # building footprint extent in the fluid/LDM frame (p_type 1000 bbox x 200.0-1116.75) [측정 4.2]
+BUILDING_BBOX_Y = (-453.0, 453.0)      # y -452.5..452.5 [측정 4.2]
+TOWER_115_SEARCH_RADIUS_M = 80.0       # the 115 m tower lies within this radius of source 110 (report 2.6/4.1; found at (552, 300.5)) [측정]
+DRONE_N_HEADINGS = 8                   # discrete move headings E, NE, N, NW, W, SW, S, SE (plan 4.5: 8방향 x 5 m + 정지)
+DRONE_N_ACTIONS = DRONE_N_HEADINGS + 1 # + stay (action index 8)
+RAY_MAX_RANGE_M = 100.0                # 8-direction building-distance observation, normalised by 100 m (plan 4.5)
+VALIDATE_DRONE_N_RANDOM = 5000         # random points for the stl_tools.is_inside_building agreement check (validate_drone) [plan D2]
+VALIDATE_DRONE_N_TIMING = 1000         # batch size for the is_free / ray_distances timing (validate_drone) [plan D2]
+
+# --------------------------------------------------------------------------------------
+# Scene figures  [plan S0 산출물 그림 1-2; scripts/fig_scene.py]
+# --------------------------------------------------------------------------------------
+FIG_SCENE_FRAME_INDEX = N_FILES - 1    # figures 1-2 use the last frame: index 599 = step 30000 [plan S0]
+LDM_EXTENT_X_30000 = (330.6, 1322.6)   # LDM particle envelope at step 30000, x [m] (dashed box in figure 1) [측정 2.5, 5]
+LDM_EXTENT_Y_30000 = (-485.8, 548.0)   # y [m] [측정 2.5, 5]
+FIG_HIGHLIGHT_SOURCE = 110             # source highlighted in figure 2 (next to the 115 m tower, report 2.6 / 4.1) [plan S0]
+FIG_ZOOM_HALF_WIDTH_M = 100.0          # figure 2(b): +-100 m window around FIG_HIGHLIGHT_SOURCE [plan S0]
+FIG_DPI_FINAL = 300                    # publication PNG dpi [plan S0]
+FIG_DPI_PREVIEW = 120                  # preview PNG dpi [plan S0]
+FIG_WIND_ARROW_LENGTH_M = 150.0        # drawn length of the mean-wind arrow in figure 1 (annotation only) [plan S0]
+FIG_LOG_DECADES = 4.0                  # log10 colour scale of the density maps spans [vmax/10^4, vmax] [plan S0]
+
+# --------------------------------------------------------------------------------------
+# Slab validation T0-3 / T0-4  [plan 3 S0; scripts/validate_slabs.py]
+# --------------------------------------------------------------------------------------
+T0_3_N_QUERIES_PER_SOURCE = 1000   # random drone positions per source inside its occupied slab cells (plan S0 T0-3: 1,000곳) [plan S0]
+T0_3_N_UNIFORM = 2000              # extra positions uniform over the whole slab grid, all 13 sources summed [plan D2]
+T0_3_MIN_R = 0.9                   # T0-3 pass criterion: pooled Pearson r (bilinear slab vs exact gather) >= 0.9 [plan S0]
+T0_3_REL_ERR_MIN_EXACT = 1e-4      # relative error is reported only where the exact density > this [particles/m^3] [plan D2]
+T0_3_REL_ERR_PERCENTILE = 90       # upper percentile of the relative error reported next to the median [plan D2]
+T0_3_LOG_OFFSET = 1e-6             # log10(value + offset) correlation offset [particles/m^3] (float16 slab resolution ~6e-8 at 1e-4) [plan D2]
+T0_4_FRAME_INDICES = (400, 500, 599)   # snapshot growth table indices (steps 25025 / 27525 / 30000) [plan S0 T0-4]
+T0_4_EXPECTED_GROWTH_TOTAL = 1.46  # plan S0 T0-4 / 슬라이드 6 각주: total airborne count 599/400 expected about +46% [계산, plan S0]
