@@ -79,10 +79,13 @@ DEPOSIT_Z = 1e-4               # deposited particles sit exactly here with zero 
 # --------------------------------------------------------------------------------------
 # Concentration kernel  [측정 2.1]  concn_i = LATTICE_CELL_VOLUME * sum_j W_C6(r_ij / KERNEL_H)
 # --------------------------------------------------------------------------------------
-KERNEL_H = 7.5                                                    # support radius = 3 * DX [m]
+KERNEL_H = 7.5                                                    # support radius H = 3 * DX [m]
 LATTICE_CELL_VOLUME = DX**3                                       # 15.625 m^3
-C6_NORMALISATION = 1365.0 / (64.0 * np.pi * (KERNEL_H / DX) ** 3)  # = 1365/(64*pi*27) per lattice-unit volume
-W0_CONCN = 0.25144273          # concn of an isolated particle (self term) [측정]
+C6_W0_SI = 1365.0 / (64.0 * np.pi * KERNEL_H**3)                  # Wendland C6 3-D normalisation, W(0) in 1/m^3 = 0.016092
+C6_W0_LATTICE = C6_W0_SI * LATTICE_CELL_VOLUME                    # = 1365/(64*pi*27) = 0.251443 (lattice units) [측정]
+W0_CONCN = 0.25144273          # concn of an isolated particle in the files = C6_W0_LATTICE [측정 2.1]
+# concn_i = sum_j C6_W0_LATTICE * (1-q)^8 (1+8q+25q^2+32q^3), q = r_ij/KERNEL_H, same p_type, self included;
+# particles per m^3 = concn / LATTICE_CELL_VOLUME.
 
 # --------------------------------------------------------------------------------------
 # Sources  [측정 2.6]  mean centre of the first 132 particles per p_type (x, y); release height ~5.5 m
