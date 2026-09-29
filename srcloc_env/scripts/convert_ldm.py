@@ -40,7 +40,7 @@ def convert_one(index: int, z_levels: tuple[float, ...], out: Path, overwrite: b
     meta["n_dep_and_out"] = int((frame.deposited & frame.outflow).sum())
     meta["counts_by_source_airborne"] = frame.counts_by_source(air)
     t1 = time.perf_counter()
-    np.savez(f_npz, xyz=frame.xyz[air], p_type=(frame.p_type[air] - 100).astype(np.uint8))
+    np.savez(f_npz, xyz=frame.xyz[air], p_type=(frame.p_type[air] - config.FRAME_P_TYPE_OFFSET).astype(np.uint8))
     t2 = time.perf_counter()
     grid = SlabGrid()
     slabs = build_slabs(frame, z_levels, grid=grid)
