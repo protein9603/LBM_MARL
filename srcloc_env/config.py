@@ -117,7 +117,9 @@ SLAB_DTYPE = np.float16
 # --------------------------------------------------------------------------------------
 # Sensor  [plan 4.1]
 # --------------------------------------------------------------------------------------
-SENSOR_K0 = 26.3               # cps per (particle/m^3) placeholder: ~1e3 cps at concn 600 (=38 /m^3) [계산]
+SENSOR_K0 = 1000.0             # cps per (particle/m^3) placeholder [결정 2026-09-30]: with 26.3 only 1.5% of occupied 15 m slab cells
+                               # exceeded the Currie threshold (validate_detector); 1000 gives 20% (110: 21%, 108: 25%) and 90th-pct counts ~53 vs b=20.
+                               # k0 = activity per particle x detector efficiency is unknown anyway; scale in SENSOR_SCALE_RANGE randomises it.
 SENSOR_BACKGROUND_CPS = 20.0
 SENSOR_T = RL_STEP_SECONDS
 SENSOR_SCALE_RANGE = (0.3, 3.0)                                   # per-episode log-uniform scale on K0
@@ -130,9 +132,11 @@ PF_PRIOR_X = (330.0, 1315.0)
 PF_PRIOR_Y = (-550.0, 550.0)
 PF_EPS_MIX = 0.05
 PF_JITTER_M = 3.0
-KAPPA_REF = SENSOR_K0 * PARTICLES_PER_INDEX_STEP_PER_SOURCE / SEC_PER_INDEX_STEP   # ~7.0e3 (temporary, A) [계산]
-KAPPA_GRID_DECADES = 2.5
-KAPPA_G = 26
+RELEASE_Q_A = PARTICLES_PER_INDEX_STEP_PER_SOURCE / SEC_PER_INDEX_STEP   # 266.6 particles/s per source under interpretation A [계산]
+RELEASE_Q_B = PARTICLES_PER_INDEX_STEP_PER_SOURCE / DT_LDM_SECONDS       # 26.66 particles/s per source under interpretation B [계산]
+KAPPA_REF = SENSOR_K0 * float(np.sqrt(RELEASE_Q_A * RELEASE_Q_B))      # geometric centre of the A/B nominal ranges (temporary until T1-3) [T1-2b, 결정 2026-09-30]
+KAPPA_GRID_DECADES = 3.0       # +-3 decades: covers A and B nominal ranges (2 decades) + ~1 decade model mismatch with >= 1 decade margin [T1-2b]
+KAPPA_G = 31                   # 0.2-decade spacing [plan 4.3]
 GMM_K = 3
 
 # --------------------------------------------------------------------------------------

@@ -36,12 +36,13 @@ def test_expected_rate_formula_and_scale(det):
     np.testing.assert_allclose(det.expected_rate(n, 2.0), config.SENSOR_K0 * 2.0 * n + B)
     np.testing.assert_allclose(det.expected_counts(n, 0.5), (config.SENSOR_K0 * 0.5 * n + B) * T)
     # y_max reproduces the plan 4.1 number ~3,050 counts at scale 3, 38.4 particles/m^3
-    assert abs(config.SENSOR_Y_MAX - 3050.0) < 5.0
+    expected_ymax = (max(config.SENSOR_SCALE_RANGE) * config.SENSOR_K0 * config.SENSOR_REF_DENSITY + config.SENSOR_BACKGROUND_CPS) * config.SENSOR_T
+    assert abs(config.SENSOR_Y_MAX - expected_ymax) < 1e-6
     assert abs(det.expected_counts(config.SENSOR_REF_DENSITY, max(config.SENSOR_SCALE_RANGE)) - config.SENSOR_Y_MAX) < 1e-9
 
 
 def test_normalise_in_unit_interval_and_monotone(det):
-    y = np.array([0, 1, 5, 33, 100, 1000, 3050, 10_000, 1_000_000])
+    y = np.array([0, 1, 5, 33, 100, 1000, config.SENSOR_Y_MAX / 10, config.SENSOR_Y_MAX, 10 * config.SENSOR_Y_MAX])
     z = det.normalise(y)
     assert z.shape == y.shape
     assert np.all(z >= 0.0) and np.all(z <= 1.0)
