@@ -144,7 +144,7 @@ def test_update_matches_rbpf_grid_path(eps_mix: float):
 
     table = _TableResponse(path, G)
     cf = CandidateFilter(table, candidates=CANDIDATES, kappa_ref=kappa_ref, eps_mix=eps_mix)
-    pf = RBPF(_Fwd(table), n_particles=3, kappa_ref=kappa_ref, eps_mix=eps_mix, jitter_m=0.0, resample_frac=0.0,
+    pf = RBPF(_Fwd(table), n_particles=3, kappa_ref=kappa_ref, eps_mix=eps_mix, jitter_m=0.0, resample_frac=0.0, likelihood="poisson",
               rng=np.random.default_rng(0))
     for k in range(path.shape[0]):
         m1 = cf.update(int(y[k]), path[k])

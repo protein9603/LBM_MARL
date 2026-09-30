@@ -172,9 +172,9 @@ def test_invalid_likelihood_and_nb_mode():
     assert config.PF_LIKELIHOOD in config.PF_LIKELIHOODS and config.PF_NB_DISPERSION_R > 0.0
 
 
-def test_explicit_poisson_is_bit_identical_to_default():
+def test_explicit_config_likelihood_is_bit_identical_to_default():
     a = RBPF(SourceXAsG(), n_particles=100, rng=np.random.default_rng(11))
-    b = RBPF(SourceXAsG(), n_particles=100, rng=np.random.default_rng(11), likelihood="poisson")
+    b = RBPF(SourceXAsG(), n_particles=100, rng=np.random.default_rng(11), likelihood=config.PF_LIKELIHOOD)
     rng = np.random.default_rng(12)
     for _ in range(8):
         y = int(rng.poisson(50.0))

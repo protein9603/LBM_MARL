@@ -128,7 +128,7 @@ def test_rbpf_paths_unchanged_grid_and_nb():
     kw = dict(n_particles=40, prior_x=(0.0, 200.0), prior_y=(0.0, 150.0), eps_mix=0.0, background=0.0,
               kappa_ref=1e4, resample_frac=0.0)
     nb = RBPF(model, mode="nb", rng=np.random.default_rng(0), **kw)
-    gr = RBPF(model, mode="grid", kappa_prior="gamma", grid_decades=6.0, n_grid=2000,
+    gr = RBPF(model, mode="grid", kappa_prior="gamma", grid_decades=6.0, n_grid=2000, likelihood="poisson",
               rng=np.random.default_rng(0), **kw)
     nb.xy = xy.copy()
     gr.xy = xy.copy()

@@ -129,7 +129,8 @@ class RBPF:
         resample_frac resample when N_eff < resample_frac * N (config.PF_RESAMPLE_NEFF_FRACTION = 0.5)
         rng           numpy Generator (default: default_rng())
         dtype         float dtype of the (N, G) kappa-grid block (np.float64 default; np.float32 is ~4x faster)
-        likelihood    "poisson" (config.PF_LIKELIHOOD; R3) or "negbin" (grid mode only; R22 / R23, D7-1)
+        likelihood    "poisson" (R3) or "negbin" (grid mode only; R22 / R23, D7-1); None = config.PF_LIKELIHOOD
+                      (negbin since D7-4) except in mode "nb", which is Poisson by construction
         nb_r          negative-binomial dispersion r > 0 of the "negbin" likelihood (config.PF_NB_DISPERSION_R)
     ``reset`` must be called (the constructor calls it) before ``update``.
     """
@@ -146,11 +147,13 @@ class RBPF:
                  kappa_prior: str = "loguniform", alpha0: float = config.PF_NB_ALPHA0,
                  resample_frac: float = config.PF_RESAMPLE_NEFF_FRACTION,
                  max_jitter_tries: int = config.PF_JITTER_MAX_TRIES, dtype: type = np.float64,
-                 likelihood: str = config.PF_LIKELIHOOD, nb_r: float = config.PF_NB_DISPERSION_R) -> None:
+                 likelihood: str | None = None, nb_r: float = config.PF_NB_DISPERSION_R) -> None:
         if mode not in ("grid", "nb"):
             raise ValueError(f"mode must be 'grid' or 'nb', got {mode!r}")
         if kappa_prior not in ("loguniform", "gamma"):
             raise ValueError(f"kappa_prior must be 'loguniform' or 'gamma', got {kappa_prior!r}")
+        if likelihood is None:                       # config default; the conjugate 'nb' mode is Poisson by definition
+            likelihood = "poisson" if mode == "nb" else config.PF_LIKELIHOOD
         if likelihood not in config.PF_LIKELIHOODS:
             raise ValueError(f"likelihood must be one of {config.PF_LIKELIHOODS}, got {likelihood!r}")
         if mode == "nb" and likelihood != "poisson":

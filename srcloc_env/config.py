@@ -99,7 +99,8 @@ SOURCES_XY: dict[int, tuple[float, float]] = {
 }
 ALL_SOURCES = tuple(sorted(SOURCES_XY))
 HOLDOUT_SOURCES = (103, 105, 109)                                 # [plan 1]
-TRAIN_SOURCES = tuple(s for s in ALL_SOURCES if s not in HOLDOUT_SOURCES)
+EXCLUDED_SOURCES = (110,)                                         # unobservable at the fixed 15 m altitude (enclosed courtyard) [결정 2026-09-30 D7-4, validation_log]
+TRAIN_SOURCES = tuple(s for s in ALL_SOURCES if s not in HOLDOUT_SOURCES and s not in EXCLUDED_SOURCES)
 RELEASE_SIGMA_XY = 4.4                                            # volume-source horizontal std [측정 2.6]
 PARTICLES_PER_INDEX_STEP_PER_SOURCE = 6.665                       # [측정 2.2]
 
@@ -428,8 +429,8 @@ T1_5_TV_SUBCELLS = 5           # sub-cell quadrature points per axis for the GMM
 # RB-PF count likelihood  [plan 4.3 강건화, S1 T1-2 / T1-4, D7-1; R22 Yee & Chan 1997, R23 Hilbe 2011; pf/particle_filter.py;
 # tests/test_particle_filter_negbin.py; validate_kappa_bias / validate_t1_4 --likelihood/--nb-r]  -- appended D7-1
 # --------------------------------------------------------------------------------------
-PF_LIKELIHOOD = "poisson"          # default RBPF count likelihood (grid mode): 'poisson' y ~ Poisson(lam) (R3); kept until D7-3 decides, the scripts pass --likelihood explicitly [plan D7-1, 결정 2026-09-30]
-PF_NB_DISPERSION_R = 0.3           # negative-binomial (Gamma-Poisson) dispersion r of likelihood='negbin', Var = lam + lam^2 / r (R23): [진단 2026-09-30] dense-cell log-residual std of the frozen LDM snapshot ~1.2 -> CV ~1.8 -> r = 1 / CV^2 ~ 0.3 (validation_log 'G1 FAIL 원인과 치료'; R22 gamma-type concentration fluctuations) [측정 D6 진단]
+PF_LIKELIHOOD = "negbin"  # [결정 2026-09-30 D7-4] default RBPF count likelihood after D7-2/D7-3 (T1-4 open-source median 142 -> 49 m); R22/R23
+PF_NB_DISPERSION_R = 1.0  # [결정 2026-09-30 D7-4] NB dispersion r: D7-2 pick (r 1 best in mode F), temporal CV of the 15 m field gives r 0.78 pooled (calibrate_timeavg); earlier spatial estimate 0.3 was too flat
 PF_LIKELIHOODS = ("poisson", "negbin")   # accepted RBPF(likelihood=...) values; 'negbin' is grid mode only, the 'nb' Gamma-kappa conjugate path is Poisson only [plan D7-1]
 # --------------------------------------------------------------------------------------
 # D7-2 Mode T measurement support + (NB dispersion r) x (mode F / T) comparison  [plan 1 시간 모드 (Mode T: 시작 인덱스

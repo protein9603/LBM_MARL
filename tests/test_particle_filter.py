@@ -80,14 +80,14 @@ def test_t1_1_fine_grid_matches_nb():
     nb = _nb_sequence(RBPF(DroneXAsG(), n_particles=1, background=0.0, mode="nb", eps_mix=0.0,
                            rng=np.random.default_rng(0)))
     grid = RBPF(DroneXAsG(), n_particles=1, background=0.0, mode="grid", n_grid=2000, grid_decades=6.0,
-                kappa_prior="gamma", eps_mix=0.0, rng=np.random.default_rng(0))
+                kappa_prior="gamma", eps_mix=0.0, rng=np.random.default_rng(0), likelihood="poisson")
     assert abs(_nb_sequence(grid) - nb) < TOL_GRID_VS_NB
     # the per-particle kappa posterior on the grid stays normalised
     assert np.isclose(logsumexp(grid.logv, axis=1), 0.0, atol=1e-9).all()
 
 
 def test_grid_and_prior_layout():
-    pf = RBPF(GaussianPlume(ForwardParams()), n_particles=50, rng=np.random.default_rng(1))
+    pf = RBPF(GaussianPlume(ForwardParams()), n_particles=50, rng=np.random.default_rng(1), likelihood="poisson")
     assert pf.kgrid.shape == (config.KAPPA_G,)
     assert np.isclose(pf.kgrid[0], config.KAPPA_REF * 10.0 ** -config.KAPPA_GRID_DECADES)
     assert np.isclose(pf.kgrid[-1], config.KAPPA_REF * 10.0 ** config.KAPPA_GRID_DECADES)
@@ -101,7 +101,7 @@ def test_grid_and_prior_layout():
     assert (y >= config.PF_PRIOR_Y[0]).all() and (y <= config.PF_PRIOR_Y[1]).all()
     # one update reproduces the detector formula lam = (kgrid g + b) T in the grid log-likelihood
     g0 = 3e-4
-    pf1 = RBPF(DroneXAsG(), n_particles=1, rng=np.random.default_rng(0))
+    pf1 = RBPF(DroneXAsG(), n_particles=1, rng=np.random.default_rng(0), likelihood="poisson")
     ll = pf1.update(25, np.array([g0, 0.0, config.DRONE_Z]))
     lam = expected_counts_from_kappa(pf1.kgrid, g0)
     ref = 25 * np.log(lam) - lam - gammaln(26.0) - np.log(config.KAPPA_G)
@@ -184,7 +184,7 @@ def test_synthetic_convergence_two_drone_lawnmower():
     g_true = plume.unit_response(SRC_TRUE, path)[0]
     rng = np.random.default_rng(0)
     counts = rng.poisson((KAPPA_TRUE * g_true + config.SENSOR_BACKGROUND_CPS) * config.SENSOR_T)
-    pf = RBPF(plume, n_particles=config.PF_N_PARTICLES, rng=np.random.default_rng(100))
+    pf = RBPF(plume, n_particles=config.PF_N_PARTICLES, rng=np.random.default_rng(100), likelihood="poisson")  # Poisson truth
     h_prior = pf.entropy_xy()
     t0 = time.perf_counter()
     for y, p in zip(counts, path):
