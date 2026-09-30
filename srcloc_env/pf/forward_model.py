@@ -28,6 +28,23 @@ Two hypothesis -> response models share one interface (``unit_response`` / ``log
     g is floored at g_floor everywhere (not only upwind) so that log g is finite for the PF; in the PF
     likelihood lambda = (kappa g + b) T the floor is invisible (kappa * 1e-9 << b = 20 cps, plan 4.3).
 
+    Wind modes (plan S1 보강 / 4.2, option A, 2026-09-30):
+      ``wind_mode='global'``  one wind for every hypothesis: params.U and params.wind_dir_deg (D3 behaviour).
+      ``wind_mode='local'``   the LBM wind AT EACH HYPOTHESIS: (u_i, v_i) = wind_field.uv_at(theta_i, z = wind_z)
+        (bilinear, dead-node aware; field/wind.py, report 3.6).  The direction e_i = (u_i, v_i)/|(u_i, v_i)|
+        and the speed U_i = max(|(u_i, v_i)|, config.FWD_U_MIN) replace e and U per source; d_i, c_i,
+        sigma_y(d_i; U_i) and g follow exactly the formulas above, vectorised over N.  This is the textbook
+        convention that U in the plume formula is the wind at the effective release point (R13, Seinfeld &
+        Pandis ch. 18), evaluated here on the LBM field instead of a domain mean, so that a hypothesis in a
+        channelled street or a courtyard is advected the way the LBM flow actually goes.  Below FWD_U_MIN the
+        plume model is meaningless (travel time -> infinity, the LDM plume of source 110 is trapped, report
+        2.6) and the robust likelihood mixture (config.PF_EPS_MIX_TRAPPED, D4-3) must carry the hypothesis.
+        Dead node (all four bracketing lattice nodes inside a building at wind_z -> (u, v) = (0, 0)) or any
+        zero vector: U_i = FWD_U_MIN and the direction FALLS BACK to the global params.wind_dir_deg, so the
+        hypothesis is still evaluated (a floor-response would otherwise silently kill it).  Optional blend:
+        params.local_wind_blend in [0, 1] mixes the local and global vectors, vec_i = blend * (u_i, v_i) +
+        (1 - blend) * U e; default 1 (pure local).  ``local_wind`` exposes the per-source (U_i, dir_i).
+
 ``LibraryModel``  (plan 4.2 "라이브러리 모델")
     Candidates are the 13 real sources (config.ALL_SOURCES / SOURCES_XY); the response of candidate j at the
     drone is the cached LDM slab of source j at the current frame (field/concentration_field.py).  NOTE: the
@@ -36,7 +53,8 @@ Two hypothesis -> response models share one interface (``unit_response`` / ``log
     k * scale * q.  It exists for upper-bound performance and model-mismatch quantification only.
 
 Vectorisation: every method is pure numpy broadcasting over (N, 1) x (1, M); the D3 target is < 1 ms for
-N = config.PF_N_PARTICLES = 2000 hypotheses x M = 2 drones (scripts/validate_forward.py).
+N = config.PF_N_PARTICLES = 2000 hypotheses x M = 2 drones (scripts/validate_forward.py).  The local mode adds
+one bilinear lookup of N points per call (scripts/validate_forward_local.py reports the cost).
 """
 from __future__ import annotations
 
@@ -46,6 +64,7 @@ import numpy as np
 
 from srcloc_env import config
 from srcloc_env.field.concentration_field import FieldBackend
+from srcloc_env.field.wind import WindField
 
 
 @dataclass(frozen=True)
@@ -60,6 +79,8 @@ class ForwardParams:
     sigma_z_ratio sigma_z / sigma_y                    (config.FWD_SIGMA_Z_RATIO, plan 4.2 선택)
     g_floor       response where d <= 0 and lower clip (config.FWD_G_FLOOR, plan 4.2)
     wind_dir_deg  wind direction [deg, CCW from +x]    (0 = +x; rotation augmentation changes it)
+    local_wind_blend  weight of the local LBM vector in wind_mode='local' (config.FWD_LOCAL_WIND_BLEND = 1:
+                  pure local; 0 reproduces the global wind) [plan S1 보강]; ignored in wind_mode='global'.
     """
 
     U: float = config.FWD_DEFAULT_U
@@ -70,12 +91,42 @@ class ForwardParams:
     sigma_z_ratio: float = config.FWD_SIGMA_Z_RATIO
     g_floor: float = config.FWD_G_FLOOR
     wind_dir_deg: float = 0.0
+    local_wind_blend: float = config.FWD_LOCAL_WIND_BLEND
 
     def __post_init__(self) -> None:
         if self.U <= 0.0 or self.sigma_v < 0.0 or self.sigma0 <= 0.0 or self.T_L <= 0.0:
             raise ValueError("ForwardParams: need U > 0, sigma_v >= 0, sigma0 > 0, T_L > 0")
         if self.sigma_z_ratio <= 0.0 or self.g_floor <= 0.0:
             raise ValueError("ForwardParams: need sigma_z_ratio > 0 and g_floor > 0")
+        if not 0.0 <= self.local_wind_blend <= 1.0:
+            raise ValueError("ForwardParams: need 0 <= local_wind_blend <= 1")
+
+
+@dataclass(frozen=True)
+class LocalWind:
+    """Per-hypothesis wind of GaussianPlume.local_wind (plan S1 보강); all arrays are over the N sources.
+
+    uv        (N, 2) raw LBM (u, v) at the hypothesis and wind_z [m/s] (wind_field.uv_at; (0, 0) on dead nodes);
+              in wind_mode='global' the global vector U (cos, sin)(wind_dir_deg) is repeated.
+    vec       (N, 2) blended vector blend * uv + (1 - blend) * U_global e_global.
+    speed     (N,)   |vec| before the clip [m/s].
+    U         (N,)   advection speed used in g: max(speed, config.FWD_U_MIN).
+    dir_deg   (N,)   advection direction used in g [deg, CCW from +x]; = params.wind_dir_deg where fallback.
+    fallback  (N,)   True where speed == 0 (dead node / calm) and the direction fell back to the global one.
+    """
+
+    uv: np.ndarray
+    vec: np.ndarray
+    speed: np.ndarray
+    U: np.ndarray
+    dir_deg: np.ndarray
+    fallback: np.ndarray
+
+    @property
+    def e(self) -> np.ndarray:
+        """(N, 2) unit advection vectors (cos, sin)(dir_deg)."""
+        a = np.deg2rad(self.dir_deg)
+        return np.column_stack([np.cos(a), np.sin(a)])
 
 
 def _as_points(a: np.ndarray, ncol: int, name: str) -> np.ndarray:
@@ -89,17 +140,24 @@ def _as_points(a: np.ndarray, ncol: int, name: str) -> np.ndarray:
 
 
 def wind_aligned_coords(source_xy: np.ndarray, drone_xy: np.ndarray,
-                        wind_dir_deg: float = 0.0) -> tuple[np.ndarray, np.ndarray]:
+                        wind_dir_deg: float | np.ndarray = 0.0) -> tuple[np.ndarray, np.ndarray]:
     """Downwind distance d and crosswind distance c, both (N, M), of M drones relative to N sources.
 
     r = drone - source is projected on the wind unit vector e = (cos a, sin a), a = wind_dir_deg (CCW from
     +x), and on its left-hand normal e_perp = (-sin a, cos a): d = r . e, c = r . e_perp (plan 4.2).  With
     the default a = 0 this is simply d = dx, c = dy; y-reflection keeps a = 0 (the environment mirrors the
-    positions), rotation augmentation passes the rotated wind angle.
+    positions), rotation augmentation passes the rotated wind angle.  ``wind_dir_deg`` may also be an (N,)
+    array of per-source angles (wind_mode='local', plan S1 보강): row i then uses its own e_i.
     """
     s = _as_points(source_xy, 2, "source_xy")
     p = _as_points(drone_xy, 2, "drone_xy")
-    a = np.deg2rad(float(wind_dir_deg))
+    a = np.deg2rad(np.asarray(wind_dir_deg, dtype=np.float64))
+    if a.ndim == 1:
+        if a.shape[0] != s.shape[0]:
+            raise ValueError(f"wind_dir_deg must be a scalar or have shape (N={s.shape[0]},), got {a.shape}")
+        a = a[:, None]                                # (N, 1)
+    elif a.ndim != 0:
+        raise ValueError(f"wind_dir_deg must be a scalar or an (N,) array, got shape {a.shape}")
     ca, sa = np.cos(a), np.sin(a)
     dx = p[None, :, 0] - s[:, None, 0]          # (N, M)
     dy = p[None, :, 1] - s[:, None, 1]
@@ -113,35 +171,87 @@ class GaussianPlume:
 
     ``unit_response(source_xy (N,2), drone_xyz (M,3)) -> g (N, M)`` in (particles/m^3) per (particle/s);
     ``log_unit_response`` returns log g computed in the log domain (no underflow before the floor).
+
+    wind_mode 'global' (default, params.U / params.wind_dir_deg for every hypothesis) or 'local' (LBM wind at
+    each hypothesis from ``wind_field``, plan S1 보강; see the module docstring and ``local_wind``).
+    ``wind_z`` is the lookup height of the local wind (config.FWD_LOCAL_WIND_Z = the 15 m drone slab).
     """
 
-    def __init__(self, params: ForwardParams | None = None):
+    def __init__(self, params: ForwardParams | None = None, wind_field: WindField | None = None,
+                 wind_mode: str = "global", wind_z: float = config.FWD_LOCAL_WIND_Z):
         self.params = params if params is not None else ForwardParams()
+        if wind_mode not in config.FWD_WIND_MODES:
+            raise ValueError(f"wind_mode must be one of {config.FWD_WIND_MODES}, got {wind_mode!r}")
+        if wind_mode == "local" and wind_field is None:
+            raise ValueError("wind_mode='local' needs a WindField (field/wind.py)")
+        self.wind_field = wind_field
+        self.wind_mode = wind_mode
+        self.wind_z = float(wind_z)
+
+    # ------------------------------------------------------------------ wind
+    def local_wind(self, source_xy: np.ndarray) -> LocalWind:
+        """Per-hypothesis advection speed U_i and direction dir_i (plan S1 보강); see ``LocalWind``.
+
+        wind_mode='local': (u_i, v_i) = wind_field.uv_at(theta_i, wind_z); vec_i = blend (u_i, v_i) +
+        (1 - blend) U (cos, sin)(wind_dir_deg); U_i = max(|vec_i|, config.FWD_U_MIN); dir_i = atan2(vec_i)
+        where |vec_i| > 0, else the global wind_dir_deg (dead node / calm fallback, documented in the module).
+        wind_mode='global': the global (U, wind_dir_deg) repeated N times (uv = U e, no fallback).
+        """
+        p = self.params
+        s = _as_points(source_xy, 2, "source_xy")
+        n = s.shape[0]
+        a = np.deg2rad(p.wind_dir_deg)
+        e_global = np.array([np.cos(a), np.sin(a)], dtype=np.float64)
+        if self.wind_mode == "global":
+            uv = np.broadcast_to(p.U * e_global, (n, 2)).copy()
+            return LocalWind(uv=uv, vec=uv.copy(), speed=np.full(n, float(p.U)), U=np.full(n, float(p.U)),
+                             dir_deg=np.full(n, float(p.wind_dir_deg)), fallback=np.zeros(n, dtype=bool))
+        uv = self.wind_field.uv_at(s, self.wind_z)                                   # (N, 2), (0, 0) on dead nodes
+        b = float(p.local_wind_blend)
+        vec = uv if b == 1.0 else b * uv + (1.0 - b) * (p.U * e_global)[None, :]
+        speed = np.hypot(vec[:, 0], vec[:, 1])
+        fallback = speed <= 0.0
+        dir_deg = np.where(fallback, float(p.wind_dir_deg), np.degrees(np.arctan2(vec[:, 1], vec[:, 0])))
+        U = np.maximum(speed, config.FWD_U_MIN)
+        return LocalWind(uv=uv, vec=np.array(vec, dtype=np.float64), speed=speed, U=U, dir_deg=dir_deg,
+                         fallback=fallback)
 
     # ------------------------------------------------------------------ spread
-    def sigma_y(self, d: np.ndarray) -> np.ndarray:
-        """Lateral std [m] at downwind distance d (array); for d <= 0 the value at d = 0 (sigma0) is returned."""
+    def sigma_y(self, d: np.ndarray, U: float | np.ndarray | None = None) -> np.ndarray:
+        """Lateral std [m] at downwind distance d (array); for d <= 0 the value at d = 0 (sigma0) is returned.
+
+        ``U`` (scalar or array broadcastable with d, e.g. (N, 1) per-source speeds of wind_mode='local')
+        defaults to params.U.
+        """
         p = self.params
+        u = p.U if U is None else np.asarray(U, dtype=np.float64)
         dd = np.maximum(np.asarray(d, dtype=np.float64), 0.0)
-        var = p.sigma0 ** 2 + (p.sigma_v * dd / p.U) ** 2 / (1.0 + dd / (2.0 * p.U * p.T_L))
+        var = p.sigma0 ** 2 + (p.sigma_v * dd / u) ** 2 / (1.0 + dd / (2.0 * u * p.T_L))
         return np.sqrt(var)
 
-    def sigma_z(self, d: np.ndarray) -> np.ndarray:
+    def sigma_z(self, d: np.ndarray, U: float | np.ndarray | None = None) -> np.ndarray:
         """Vertical std [m] = sigma_z_ratio * sigma_y(d) (plan 4.2 선택)."""
-        return self.params.sigma_z_ratio * self.sigma_y(d)
+        return self.params.sigma_z_ratio * self.sigma_y(d, U)
 
     # ------------------------------------------------------------------ responses
     def _log_g_unfloored(self, source_xy: np.ndarray, drone_xyz: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """(log g without floor, d) both (N, M); log g is meaningless where d <= 0 (callers mask it)."""
         p = self.params
+        src = _as_points(source_xy, 2, "source_xy")
         drone = _as_points(drone_xyz, 3, "drone_xyz")
-        d, c = wind_aligned_coords(source_xy, drone[:, :2], p.wind_dir_deg)
-        sy = self.sigma_y(d)
+        if self.wind_mode == "local":
+            lw = self.local_wind(src)
+            u = lw.U[:, None]                                            # (N, 1) per-source speed
+            d, c = wind_aligned_coords(src, drone[:, :2], lw.dir_deg)   # per-source direction
+        else:
+            u = p.U
+            d, c = wind_aligned_coords(src, drone[:, :2], p.wind_dir_deg)
+        sy = self.sigma_y(d, u)
         sz = p.sigma_z_ratio * sy
         z = drone[None, :, 2]                                            # (1, M)
         inv2sz2 = 0.5 / (sz * sz)
         vert = np.logaddexp(-(z - p.z_s) ** 2 * inv2sz2, -(z + p.z_s) ** 2 * inv2sz2)
-        log_g = -np.log(2.0 * np.pi * p.U * sy * sz) - 0.5 * (c * c) / (sy * sy) + vert
+        log_g = -np.log(2.0 * np.pi * u * sy * sz) - 0.5 * (c * c) / (sy * sy) + vert
         return log_g, d
 
     def log_unit_response(self, source_xy: np.ndarray, drone_xyz: np.ndarray) -> np.ndarray:

@@ -264,3 +264,50 @@ T1_2B_MIN_MARGIN_DECADES = 1.0      # T1-2b: nominal kappa ranges must sit >= 1 
 T1_2B_GRID_ROUND_DECADES = 0.5      # recommended grid_decades is rounded up to this step (plan: ±3 decade fallback, G = 31) [plan T1-2b]
 T1_2B_MISMATCH_DECADES = 0.9        # informational extra: trapped-source model mismatch up to 8x ~ 0.9 decade (report 2.6) [plan 4.3]
 Q_RELEASE_B = PARTICLES_PER_INDEX_STEP_PER_SOURCE / DT_LDM_SECONDS   # 26.66 particles/s actual release rate under interpretation B (index step = 0.25 s) [계산]
+# --------------------------------------------------------------------------------------
+# LBM adjoint forward model, option B-1  [plan 4.2b; docs/lbm_forward_model.md 2-5, 7; pf/lbm_adjoint.py; validate_adjoint]  -- appended D4-4
+# --------------------------------------------------------------------------------------
+ADJ_SIGMA_V_REF = 0.65             # sigma_v of the default K: middle of the report 2.1 range 0.3-0.9 m/s (FWD_SIGMA_V_CANDIDATES) [추정, plan 4.2b]
+ADJ_K_DEFAULT = 4.0                # effective horizontal diffusivity K = sigma_v^2 T_L = 0.65^2 x 9.5 = 4.01 m^2/s (R15 Taylor, far-field limit) [계산]
+ADJ_LAMBDA_DEFAULT = 0.02          # first-order loss rate lam [1/s] = vertical mixing out of the 15 m layer + deposition, calibrated in T1-3b [추정]
+ADJ_H_LAYER = 10.0                 # layer thickness [m] of the 2-D -> 3-D conversion (particles/m^2 / h -> particles/m^3); constant absorbed by kappa [추정]
+ADJ_K_CANDIDATES = (1.0, 2.0, 4.0, 8.0)                  # T1-3b calibration grid for K [m^2/s] (sigma_v 0.3-0.9 -> 0.9-7.7) [plan 4.2b]
+ADJ_LAMBDA_CANDIDATES = (0.005, 0.01, 0.02, 0.05, 0.1)   # T1-3b calibration grid for lam [1/s] [plan 4.2b]
+ADJ_SOLVE_TIME_TARGET_S = 0.02     # one adjoint solve (receptor -> psi field) must fit the 20 ms environment-step budget [plan 4.2b]
+ADJ_FOOTPRINT_TRUNC_SIGMA = 3.0    # source footprint = Gaussian(RELEASE_SIGMA_XY) on the box of +-ceil(3 sigma0 / res) cells, renormalised to 1 over free cells [추정]
+ADJ_CACHE_ROUND_M = 0.5            # receptor position rounding of the psi LRU key [m] (plan 4.2b: cell index + bilinear offsets to 0.5 m) [plan 4.2b]
+ADJ_MAX_CACHED = 256               # psi fields held by the LbmAdjointModel LRU (207 x 200 float64 = 0.33 MB each -> 85 MB) [계산]
+ADJ_FACTORIZE_TIME_TARGET_S = 10.0 # criterion on assembly + LU factorisation of the real-size grid (200 x 207, ~20 % blocked) [plan D4-4]
+ADJ_TEST_SOLVE_TIME_LOOSE_S = 0.1  # unit-test (CI) bound on the adjoint solve median; the 20 ms target itself is checked by validate_adjoint [plan D4-4]
+ADJ_VALIDATE_N_RECEPTORS = 50      # validate_adjoint: random free receptors timed (median / p99) [plan D4-4]
+ADJ_VALIDATE_N_PAIRS = 20          # validate_adjoint: random (source, receptor) cell pairs of the reciprocity check on the real operator [plan D4-4]
+ADJ_VALIDATE_RADIUS_M = 60.0       # validate_adjoint: mass fraction within this radius of the source (109 open vs 110 trapped, report 2.6) [plan D4-4]
+ADJ_RECIPROCITY_TOL = 1e-6         # validate_adjoint PASS criterion: max |C_s(p) - psi_p(s)| / max(|C_s(p)|, |psi_p(s)|) [plan D4-4]
+ADJ_MASS_BALANCE_TOL = 1e-6        # validate_adjoint PASS criterion: |lam sum(C) area + outflow - 1| for a unit source [plan D4-4]
+ADJ_FIG_HALF_WIDTH_M = 200.0       # fig_adjoint_check: +-200 m window around each source [plan D4-4]
+
+# --------------------------------------------------------------------------------------
+# Local-wind Gaussian plume, option A  [plan S1 보강 (2026-09-30), 4.2; pf/forward_model.py; validate_forward_local]  -- appended D4-2
+# --------------------------------------------------------------------------------------
+FWD_WIND_MODES = ("global", "local")   # GaussianPlume.wind_mode: 'global' = params.U / wind_dir_deg for all hypotheses (D3), 'local' = LBM wind at each hypothesis [plan S1 보강]
+FWD_U_MIN = 0.3                        # [m/s] lower clip of the per-hypothesis speed U_i = max(|(u,v)|, FWD_U_MIN); below this the plume model is meaningless (travel time -> inf, trapped plume of 110) and the robust mixture must carry the hypothesis [plan S1 보강, 결정 2026-09-30]
+FWD_LOCAL_WIND_Z = DRONE_Z             # [m] lookup height of the local wind = the 15 m drone slab (stored levels 13.75/16.25 interpolated, report 3.6) [plan S1 보강]
+FWD_LOCAL_WIND_BLEND = 1.0             # default ForwardParams.local_wind_blend: 1 = pure local vector, 0 = global (params.U, wind_dir_deg); intermediate values mix the two vectors [plan S1 보강]
+FWD_LOCAL_VALIDATE_D_M = (25.0, 50.0, 100.0, 200.0)   # validate_forward_local: centreline distances at which local vs global rho10 is reported [plan D4-2]
+PF_EPS_MIX_TRAPPED = 0.1               # epsilon of the robust likelihood mixture for trapped-source scenes (110, 102; report 2.6) - recorded for D4-3 / D5, not used yet [plan S1 보강]
+# --------------------------------------------------------------------------------------
+# T1-3 shape-based calibration of the analytic plume  [plan S1 T1-3, 4.2 캘리브레이션 규칙; scripts/calibrate_forward.py]  -- appended D4-3
+# --------------------------------------------------------------------------------------
+T1_3_FRAME_INDEX = N_FILES - 1                     # truth = slab frame index 599 (step 30000), z = DRONE_Z [plan T1-3]
+T1_3_OPEN_SOURCES = (101, 108, 109, 111, 113)      # open sources of the T1-3 pass criterion std(rho') < T1_3_STD_PASS (plan T1-3 / T1-4; 109 is also a holdout source) [plan T1-3]
+T1_3_TRAPPED_SOURCES = (110, 102)                  # trapped sources whose analytic-plume failure is reported as is (report 2.6, plan S1 보강 / T1-4) [plan S1]
+T1_3_STD_PASS = 1.0                                # PASS: std(rho') < 1.0 for every open source at the chosen combination [plan T1-3]
+T1_3_G_FLOOR_FACTOR = 10.0                         # downwind cell selection also requires g > 10 * FWD_G_FLOOR (cells whose response is the floor clip carry no shape information) [plan D4-3]
+T1_3_MIN_DISCRIMINABILITY = 0.1                    # plan S1 위험·대안: if the spread of mean_train std(rho') over the 9 (U, sigma_v) combos is < 0.1, the physical defaults (FWD_DEFAULT_U, FWD_DEFAULT_SIGMA_V) are to be used and "판별력 부족" recorded in table 1 [plan S1]
+T1_3_FIG_SOURCES = (109, 110)                      # figure 3: rho' maps of the open source 109 and the trapped source 110 [plan T1-3, slide 9]
+T1_3_FIG_RHO_CLIP = 3.0                            # figure 3 diverging colour scale of rho' clipped to +-3 [plan D4-3]
+T1_3_FIG_WINDOW_M = (150.0, 450.0, 250.0)          # figure 3 window around the source: upwind / downwind (+x) / crosswind half-extent [m] [plan D4-3]
+T1_3_FIG_ARROW_M = 60.0                            # drawn length of the model wind arrow at the source in figure 3 (annotation only) [plan D4-3]
+ADJ_SPLU_PERMC_SPEC = "MMD_AT_PLUS_A"   # SuperLU column ordering: 35 % less fill than COLAMD on the 5-point operator (L+U 0.99 M vs 1.5 M nnz), adjoint solve 3.9 vs 6 ms [측정 D4-4]
+ADJ_SPLU_SYMMETRIC_MODE = True          # SuperLU SymmetricMode (structurally symmetric pattern): factorisation 0.17 s instead of 1.96 s with MMD_AT_PLUS_A [측정 D4-4]
+T1_3_INFO_DENSITY_FRACTION = 0.01                  # informational only (not the selection statistic): std(rho') restricted to cells with n_LDM > 1 % of the source's slab maximum, i.e. above the single-particle fringe (an isolated particle gives concn 0.2514 / 15.625 = 0.016 particles/m^3, report 2.1) [plan D4-3 진단]
