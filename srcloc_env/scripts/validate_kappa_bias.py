@@ -3,6 +3,7 @@
 
 Usage: python -m srcloc_env.scripts.validate_kappa_bias [--seed 0] [--n-repeats 20] [--n-steps 100]
        [--out <CACHE_DIR>/validate_kappa_bias.json] [--fig <FIG_DIR>/fig4_kappa_bias.png]
+       [--likelihood poisson|negbin] [--nb-r 0.3]
 
 Design (plan T1-2, followed with the D5-3 choices recorded in config)
 ---------------------------------------------------------------------
@@ -21,7 +22,10 @@ path    the two-drone sawtooth lawnmower of scripts/validate_pf_adjoint.two_dron
         start config.PF_ADJ_START_DOWNWIND_M downwind, fly -x, adjacent y bands of width PF_ADJ_SWEEP_WIDTH_M;
         config.T1_2_N_STEPS = 100 steps per drone -> 200 measurements per repeat, fused sequentially on one RBPF
         (drone 1, drone 2, drone 1, ...; plan 4.3).  The same path and the same counts are fed to every filter.
-filters (all N = config.PF_N_PARTICLES, mode='grid', same PF seed, obstacles = ObstacleMap.load(), eps_mix default)
+filters (all N = config.PF_N_PARTICLES, mode='grid', same PF seed, obstacles = ObstacleMap.load(), eps_mix default;
+        count likelihood --likelihood for ALL four filters: 'poisson' (R3) or 'negbin' with dispersion --nb-r
+        (R22 / R23, D7-1) - the truth stays Poisson, so 'negbin' measures the cost of the over-dispersed
+        likelihood on well-specified counts)
         (i)   kappa_known      kappa fixed at kappa_true            (oracle reference)
         (ii)  rbpf_grid        RB-PF with the config grid: KAPPA_REF x 10^[-KAPPA_GRID_DECADES, +], G = KAPPA_G
         (iii) kappa_fixed_high kappa fixed at T1_2_KAPPA_FIXED_FACTORS[0] x kappa_true (3x)
@@ -64,7 +68,8 @@ config.FIG_DIR / fig4_kappa_bias.png (+ _preview.png)  figure 4: one column per 
         of the fixed-wrong filters).  English labels, Agg backend, config.FIG_DPI_FINAL + FIG_DPI_PREVIEW.
 
 References: R3 (Poisson count likelihood), R5 (Rao-Blackwellised PF: kappa marginalised per particle), R13 / R15
-(analytic plume), R16 (systematic resampling), R17 / R18 (adjoint source-receptor model).  ``sample_kappa_true``,
+(analytic plume), R16 (systematic resampling), R17 / R18 (adjoint source-receptor model), R22 / R23 (negative-binomial
+likelihood, D7-1).  ``sample_kappa_true``,
 ``make_filter``, ``simulate_counts``, ``run_filter``, ``run_repeat``, ``run_case``, ``summarise`` and
 ``evaluate_pass`` are data-free and unit-tested on a small GaussianPlume set-up in tests/test_kappa_bias.py.
 """
@@ -117,8 +122,10 @@ def make_filter(name: str, model: ForwardModel, kappa_true: float, rng: np.rando
                 n_particles: int = config.PF_N_PARTICLES, obstacles: ObstacleMap | None = None,
                 prior_x: tuple[float, float] = config.PF_PRIOR_X, prior_y: tuple[float, float] = config.PF_PRIOR_Y,
                 fixed_factors: tuple[float, float] = config.T1_2_KAPPA_FIXED_FACTORS,
-                fixed_decades: float = config.T1_2_FIXED_KAPPA_DECADES, n_grid: int = config.KAPPA_G) -> RBPF:
-    """One of the four T1-2 filters (module docstring), all mode='grid' on the same forward model.
+                fixed_decades: float = config.T1_2_FIXED_KAPPA_DECADES, n_grid: int = config.KAPPA_G,
+                likelihood: str = config.PF_LIKELIHOOD, nb_r: float = config.PF_NB_DISPERSION_R) -> RBPF:
+    """One of the four T1-2 filters (module docstring), all mode='grid' on the same forward model and with the same
+    count likelihood (``likelihood`` / ``nb_r``, D7-1).
 
     'rbpf_grid' uses the config kappa grid (KAPPA_REF, KAPPA_GRID_DECADES; G = `n_grid`, default KAPPA_G - the
     --n-grid diagnostic of main() refines the 0.2-decade spacing); the three fixed-kappa
@@ -126,7 +133,7 @@ def make_filter(name: str, model: ForwardModel, kappa_true: float, rng: np.rando
     (factor 1 for 'kappa_known', fixed_factors[0] / [1] for 'kappa_fixed_high' / 'kappa_fixed_low').
     """
     common = dict(n_particles=int(n_particles), mode="grid", obstacles=obstacles, rng=rng,
-                  prior_x=prior_x, prior_y=prior_y)
+                  prior_x=prior_x, prior_y=prior_y, likelihood=likelihood, nb_r=float(nb_r))
     if name == "rbpf_grid":
         return RBPF(model, n_grid=int(n_grid), **common)
     factors = {"kappa_known": 1.0, "kappa_fixed_high": float(fixed_factors[0]), "kappa_fixed_low": float(fixed_factors[1])}
@@ -179,7 +186,8 @@ def run_repeat(model: ForwardModel, true_xy: np.ndarray, drones_xyz: np.ndarray,
                n_particles: int = config.PF_N_PARTICLES, prior_x: tuple[float, float] = config.PF_PRIOR_X,
                prior_y: tuple[float, float] = config.PF_PRIOR_Y,
                report_at: tuple[int, ...] = config.T1_2_REPORT_MEASUREMENTS,
-               filters: tuple[str, ...] = FILTER_NAMES, n_grid: int = config.KAPPA_G) -> dict:
+               filters: tuple[str, ...] = FILTER_NAMES, n_grid: int = config.KAPPA_G,
+               likelihood: str = config.PF_LIKELIHOOD, nb_r: float = config.PF_NB_DISPERSION_R) -> dict:
     """One repeat: one Poisson count set (rng [seed, repeat, 1]) fed to every filter, each started from the same
     PF seed (rng [seed, repeat, 2]); returns the per-filter metrics and the (ii) vs (i) comparison."""
     counts, expected = simulate_counts(model, true_xy, drones_xyz, kappa_true, det, np.random.default_rng([seed, repeat, 1]))
@@ -191,7 +199,7 @@ def run_repeat(model: ForwardModel, true_xy: np.ndarray, drones_xyz: np.ndarray,
     }
     for name in filters:
         pf = make_filter(name, model, kappa_true, np.random.default_rng([seed, repeat, 2]), n_particles, obstacles,
-                         prior_x, prior_y, n_grid=n_grid)
+                         prior_x, prior_y, n_grid=n_grid, likelihood=likelihood, nb_r=nb_r)
         out["filters"][name] = run_filter(pf, counts, drones_xyz, true_xy, kappa_true, report_at)
     if "rbpf_grid" in out["filters"] and "kappa_known" in out["filters"]:
         a, b = out["filters"]["rbpf_grid"], out["filters"]["kappa_known"]
@@ -258,14 +266,16 @@ def run_case(model: ForwardModel, true_xy: np.ndarray, paths: np.ndarray, seed: 
              det: Detector, obstacles: ObstacleMap | None = None, n_particles: int = config.PF_N_PARTICLES,
              prior_x: tuple[float, float] = config.PF_PRIOR_X, prior_y: tuple[float, float] = config.PF_PRIOR_Y,
              report_at: tuple[int, ...] = config.T1_2_REPORT_MEASUREMENTS,
-             filters: tuple[str, ...] = FILTER_NAMES, n_grid: int = config.KAPPA_G) -> dict:
+             filters: tuple[str, ...] = FILTER_NAMES, n_grid: int = config.KAPPA_G,
+             likelihood: str = config.PF_LIKELIHOOD, nb_r: float = config.PF_NB_DISPERSION_R) -> dict:
     """All repeats of one (model, source) case on ``paths`` (n_steps, n_drones, 2): kappa_true drawn once per
     repeat from rng [seed, 0]; measurements interleave the drones per step (drone 1, drone 2, ...)."""
     kappas = sample_kappa_true(np.random.default_rng([seed, 0]), n_repeats)
     flat = np.asarray(paths, dtype=np.float64).reshape(-1, 2)
     drones_xyz = np.column_stack([flat, np.full(flat.shape[0], config.DRONE_Z)])
     repeats = [run_repeat(model, true_xy, drones_xyz, float(kappas[r]), seed, r, det, obstacles, n_particles,
-                          prior_x, prior_y, report_at, filters, n_grid) for r in range(int(n_repeats))]
+                          prior_x, prior_y, report_at, filters, n_grid, likelihood=likelihood, nb_r=nb_r)
+               for r in range(int(n_repeats))]
     summary = summarise(repeats, filters)
     out = {"true_xy": np.asarray(true_xy, dtype=np.float64).tolist(), "n_measurements": int(flat.shape[0]),
            "kappa_true": kappas.tolist(), "repeats": repeats, "summary": summary}
@@ -297,8 +307,11 @@ def _box(ax: plt.Axes, data: list[np.ndarray], names: tuple[str, ...], log: bool
         ax.spines[sp].set_visible(False)
 
 
-def make_figure(cases: list[dict], path: Path, names: tuple[str, ...] = FILTER_NAMES) -> None:
-    """Figure 4 (module docstring): columns = cases; rows = MAP error, downwind bias, RB-PF kappa recovery."""
+def make_figure(cases: list[dict], path: Path, names: tuple[str, ...] = FILTER_NAMES,
+                likelihood: str = config.PF_LIKELIHOOD, nb_r: float = config.PF_NB_DISPERSION_R) -> None:
+    """Figure 4 (module docstring): columns = cases; rows = MAP error, downwind bias, RB-PF kappa recovery;
+    the count likelihood of the filters is named in the title (D7-1)."""
+    lik = f"{likelihood} likelihood" + (f" (r = {nb_r:g})" if likelihood == "negbin" else "")
     n = len(cases)
     fig, axes = plt.subplots(3, n, figsize=(4.6 * n + 0.8, 11.0), constrained_layout=True, squeeze=False)
     for j, c in enumerate(cases):
@@ -360,7 +373,7 @@ def make_figure(cases: list[dict], path: Path, names: tuple[str, ...] = FILTER_N
             ax.spines[sp].set_visible(False)
     fig.suptitle(f"T1-2: kappa marginalisation vs fixed kappa (truth = the filter's own forward model, N = {config.PF_N_PARTICLES}, "
                  f"{cases[0]['n_measurements']} measurements per repeat, {len(cases[0]['repeats'])} repeats, "
-                 f"kappa_true ~ KAPPA_REF x 10^[-{config.T1_2_KAPPA_TRUE_DECADES:g}, +{config.T1_2_KAPPA_TRUE_DECADES:g}])", fontsize=11)
+                 f"kappa_true ~ KAPPA_REF x 10^[-{config.T1_2_KAPPA_TRUE_DECADES:g}, +{config.T1_2_KAPPA_TRUE_DECADES:g}], {lik})", fontsize=11)
     path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(path, dpi=config.FIG_DPI_FINAL)
     fig.savefig(path.with_name(path.stem + "_preview" + path.suffix), dpi=config.FIG_DPI_PREVIEW)
@@ -395,6 +408,10 @@ def main(argv: list[str] | None = None) -> dict:
                     help="G of the RB-PF kappa grid (diagnostic: 61 = 0.1-decade spacing instead of the config 0.2)")
     ap.add_argument("--cases", type=str, default=None,
                     help="comma-separated model:source subset of config.T1_2_CASES, e.g. adjoint:109")
+    ap.add_argument("--likelihood", choices=list(config.PF_LIKELIHOODS), default=config.PF_LIKELIHOOD,
+                    help="count likelihood of every filter: 'poisson' (R3) or 'negbin' (Gamma-Poisson, R22 / R23; D7-1)")
+    ap.add_argument("--nb-r", type=float, default=config.PF_NB_DISPERSION_R,
+                    help="negative-binomial dispersion r (Var = lam + lam^2 / r) of --likelihood negbin")
     args = ap.parse_args(argv)
     cases_todo = list(config.T1_2_CASES)
     if args.cases:
@@ -417,7 +434,8 @@ def main(argv: list[str] | None = None) -> dict:
         true_xy = np.asarray(config.SOURCES_XY[src], dtype=np.float64)
         paths, info = two_drone_paths(om, config.SOURCES_XY[src], args.n_steps)
         t1 = time.perf_counter()
-        c = run_case(models[model_name], true_xy, paths, args.seed, args.n_repeats, det, om, n_grid=args.n_grid)
+        c = run_case(models[model_name], true_xy, paths, args.seed, args.n_repeats, det, om, n_grid=args.n_grid,
+                     likelihood=args.likelihood, nb_r=args.nb_r)
         uv = wf.uv_at(true_xy.reshape(1, 2), config.DRONE_Z)[0]
         c.update({"model": model_name, "source": int(src), "path_info": info, "wall_seconds": time.perf_counter() - t1,
                   "lbm_wind_at_source_15m": {"u": float(uv[0]), "v": float(uv[1]), "speed": float(np.hypot(*uv)),
@@ -435,13 +453,14 @@ def main(argv: list[str] | None = None) -> dict:
               f"RB-PF kappa med/true {f['rbpf_grid']['kappa_median_over_true']['median']:.2f}; "
               f"expected counts max median {s['expected_counts_max']['median']:.0f}; {c['wall_seconds']:.0f} s", flush=True)
 
-    make_figure(cases, args.fig)
+    make_figure(cases, args.fig, likelihood=args.likelihood, nb_r=args.nb_r)
     overall_map = all(c["pass"]["pass_map_diff"] for c in cases)
     overall_bias = all(c["pass"]["pass_bias"] for c in cases)
     res = {
         "settings": {"seed": args.seed, "n_repeats": args.n_repeats, "n_steps_per_drone": args.n_steps,
                      "n_drones": config.PF_ADJ_N_DRONES, "n_measurements": int(args.n_steps * config.PF_ADJ_N_DRONES),
                      "n_particles": config.PF_N_PARTICLES, "eps_mix": config.PF_EPS_MIX, "n_grid": args.n_grid,
+                     "likelihood": args.likelihood, "nb_r": args.nb_r,
                      "kappa_ref": config.KAPPA_REF, "grid_decades": config.KAPPA_GRID_DECADES,
                      "kappa_grid_spacing_decades": 2.0 * config.KAPPA_GRID_DECADES / (args.n_grid - 1),
                      "kappa_true_decades": config.T1_2_KAPPA_TRUE_DECADES, "kappa_fixed_factors": list(config.T1_2_KAPPA_FIXED_FACTORS),
@@ -462,7 +481,8 @@ def main(argv: list[str] | None = None) -> dict:
     args.out.write_text(json.dumps(res, indent=2), encoding="utf-8")
     print(f"T1-2 |MAP(ii) - MAP(i)| median < {config.T1_2_MAP_DIFF_PASS_M:.0f} m (all cases):", "PASS" if overall_map else "FAIL")
     print("T1-2 fixed-wrong kappa bias > RB-PF bias (all cases):", "PASS" if overall_bias else "FAIL")
-    print(f"total {res['total_seconds']:.0f} s; JSON {args.out}; figure {args.fig}")
+    print(f"likelihood {args.likelihood}" + (f" (r = {args.nb_r:g})" if args.likelihood == "negbin" else "")
+          + f"; total {res['total_seconds']:.0f} s; JSON {args.out}; figure {args.fig}")
     return res
 
 

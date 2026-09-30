@@ -8,6 +8,9 @@ References (docs/references.md)
         with g the unit response of the forward model (plan 4.2) and b the background rate.
     R6  Gelman et al. (2013) BDA3 Ch. 2: Gamma-Poisson conjugacy -> negative-binomial marginal likelihood,
         used on the b = 0 fast path (unit test T1-1) to validate the log-grid path.
+    R22 Yee & Chan (1997): instantaneous plume concentrations fluctuate around their mean with a gamma-type
+        distribution, so one frozen LDM snapshot seen through a mean-field forward model is over-dispersed.
+    R23 Hilbe (2011) Ch. 1-2: Gamma-Poisson mixture = negative-binomial count model, Var = mu + mu^2 / r.
 
 Two kappa-marginalisation paths (plan 4.3)
     mode = "grid" (default, any background b >= 0): every particle i keeps log-weights logv[i, g] over the
@@ -26,6 +29,18 @@ Two kappa-marginalisation paths (plan 4.3)
         must be proportional to kappa), so the constructor raises for background > 0 and mode = "nb".
     Both paths need lam > 0, i.e. g > 0 whenever b = 0 (GaussianPlume floors g at config.FWD_G_FLOOR); a stub
     forward model returning g = 0 with b = 0 and y = 0 would produce 0 * log 0 = NaN weights.
+
+Count likelihood (D7-1; plan 4.3 강건화, S1 T1-2 / T1-4; ``likelihood`` = config.PF_LIKELIHOOD)
+    "poisson" (R3, default): the grid block above, unchanged (bit-identical to D3).
+    "negbin"  (grid mode only; R22, R23): y | lam ~ NB(r, lam) with mean lam = (kgrid g + b) T and
+        Var = lam + lam^2 / r, i.e. the Gamma-Poisson marginal of a count rate fluctuating as lam Gamma(r, 1/r):
+            log p(y | lam) = gammaln(y + r) - gammaln(r) - gammaln(y + 1) + r log(r / (r + lam)) + y log(lam / (r + lam))
+        evaluated in place in ``dtype`` as ll = y (log lam - t) + r (log r - t) + const(y) with t = log(lam + r),
+        so the (N, G) block costs two logs instead of one.  r = ``nb_r`` (config.PF_NB_DISPERSION_R = 0.3: T1-4
+        diagnostic of 2026-09-30, dense-cell log-residual std ~1.2 -> CV ~1.8 -> r = 1 / CV^2); r -> inf recovers
+        the Poisson likelihood.  The heavy NB tail stops the overconfident collapse of the Poisson likelihood on
+        the spatially correlated clumps of the frozen LDM snapshot (validation_log 'G1 FAIL 원인과 치료').  The
+        "nb" mode (Gamma-kappa conjugacy) is only defined for the Poisson likelihood and raises otherwise.
 
 Robustification (plan 4.3 "강건화"): the analytic plume misses trapped sources by up to 8x (report 2.6), so
     logL_i <- logaddexp(log(1 - eps) + logL_i, log(eps) + logmeanexp_j logL_j)
@@ -114,6 +129,8 @@ class RBPF:
         resample_frac resample when N_eff < resample_frac * N (config.PF_RESAMPLE_NEFF_FRACTION = 0.5)
         rng           numpy Generator (default: default_rng())
         dtype         float dtype of the (N, G) kappa-grid block (np.float64 default; np.float32 is ~4x faster)
+        likelihood    "poisson" (config.PF_LIKELIHOOD; R3) or "negbin" (grid mode only; R22 / R23, D7-1)
+        nb_r          negative-binomial dispersion r > 0 of the "negbin" likelihood (config.PF_NB_DISPERSION_R)
     ``reset`` must be called (the constructor calls it) before ``update``.
     """
 
@@ -128,11 +145,18 @@ class RBPF:
                  rng: np.random.Generator | None = None, z: float = config.DRONE_Z,
                  kappa_prior: str = "loguniform", alpha0: float = config.PF_NB_ALPHA0,
                  resample_frac: float = config.PF_RESAMPLE_NEFF_FRACTION,
-                 max_jitter_tries: int = config.PF_JITTER_MAX_TRIES, dtype: type = np.float64) -> None:
+                 max_jitter_tries: int = config.PF_JITTER_MAX_TRIES, dtype: type = np.float64,
+                 likelihood: str = config.PF_LIKELIHOOD, nb_r: float = config.PF_NB_DISPERSION_R) -> None:
         if mode not in ("grid", "nb"):
             raise ValueError(f"mode must be 'grid' or 'nb', got {mode!r}")
         if kappa_prior not in ("loguniform", "gamma"):
             raise ValueError(f"kappa_prior must be 'loguniform' or 'gamma', got {kappa_prior!r}")
+        if likelihood not in config.PF_LIKELIHOODS:
+            raise ValueError(f"likelihood must be one of {config.PF_LIKELIHOODS}, got {likelihood!r}")
+        if mode == "nb" and likelihood != "poisson":
+            raise ValueError("mode='nb' (Gamma-kappa conjugacy) supports only likelihood='poisson' (plan D7-1)")
+        if not np.isfinite(nb_r) or nb_r <= 0.0:
+            raise ValueError("need a finite nb_r > 0")
         if mode == "nb" and background > 0.0:
             raise ValueError("mode='nb' (Gamma-Poisson conjugacy) is only valid for background == 0 (plan 4.3)")
         if n_particles < 1 or n_grid < 2 or kappa_ref <= 0.0 or grid_decades <= 0.0:
@@ -166,6 +190,10 @@ class RBPF:
             raise ValueError("dtype must be a float type")
         self._kgrid_T = (self.kgrid * self.T).astype(self.dtype)          # lam = g (kgrid T) + b T, see update
         self._bT = self.dtype.type(self.background * self.T)
+        self.likelihood = likelihood
+        self.nb_r = float(nb_r)
+        self._r = self.dtype.type(self.nb_r)                                   # NB dispersion in the block dtype
+        self._nb_const_r = float(self.nb_r * np.log(self.nb_r) - gammaln(self.nb_r))   # r log r - gammaln(r)
         self.rng = rng if rng is not None else np.random.default_rng()
         # state (filled by reset)
         self.xy: np.ndarray = np.empty((self.N, 2))
@@ -226,6 +254,8 @@ class RBPF:
 
         grid mode: logv += y log(lam) - lam - gammaln(y+1), lam = (kgrid g + b) T (the same formula as
         sensor/detector.expected_counts_from_kappa, evaluated here in-place in ``dtype``); logL = logsumexp_g logv;
+        likelihood='negbin': logv += y (log lam - t) + r (log r - t) + gammaln(y + r) - gammaln(r) - gammaln(y + 1)
+        with t = log(lam + r) (module docstring, R22 / R23);
         nb mode (b = 0): negative-binomial marginal with the Gamma(a, beta) prior, then a += y, beta += g T.
         Then the robust mixture (eps_mix), logw += logL, normalisation and resampling when N_eff < frac * N.
         """
@@ -237,14 +267,26 @@ class RBPF:
             raise ValueError(f"drone_xyz must have 3 components, got {drone.size}")
         g = np.asarray(self.forward.unit_response(self.xy, drone[None, :]), dtype=np.float64)[:, 0]   # (N,)
         if self.mode == "grid":
-            # in-place (N, G) arithmetic in self.dtype: one log, one exp and a few cheap passes over N*G floats
+            # in-place (N, G) arithmetic in self.dtype: one log (two for negbin), one exp and a few cheap passes
             lam = np.outer(g.astype(self.dtype, copy=False), self._kgrid_T)          # (N, G) = g kgrid T
             lam += self._bT                                                          # + b T  (detector formula)
-            tmp = np.log(lam)
-            tmp *= self.dtype.type(y)
-            tmp -= lam
-            self.logv += tmp
-            self.logv -= self.dtype.type(gammaln(y + 1.0))
+            if self.likelihood == "poisson":
+                tmp = np.log(lam)
+                tmp *= self.dtype.type(y)
+                tmp -= lam
+                self.logv += tmp
+                self.logv -= self.dtype.type(gammaln(y + 1.0))
+            else:
+                # negative binomial (R22 / R23, D7-1): ll = y (log lam - t) + r (log r - t) + const(y), t = log(lam + r)
+                tmp = lam + self._r
+                np.log(tmp, out=tmp)                                                 # t = log(lam + r)
+                np.log(lam, out=lam)                                                 # log lam
+                lam -= tmp
+                lam *= self.dtype.type(y)                                            # y (log lam - t)
+                tmp *= self._r                                                       # r t
+                lam -= tmp
+                self.logv += lam
+                self.logv += self.dtype.type(gammaln(y + self.nb_r) - gammaln(y + 1.0) + self._nb_const_r)
             m = self.logv.max(axis=1)
             np.subtract(self.logv, m[:, None], out=tmp)
             np.exp(tmp, out=tmp)
