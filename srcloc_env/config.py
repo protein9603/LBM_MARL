@@ -378,3 +378,48 @@ LIB_SENSOR_SCALE = 1.0                     # validate_library_filter detector sc
 LIB_ADJOINT_FIELDS_NPZ = CACHE_DIR / "adjoint_fields_chosen.npz"   # calibrate_adjoint.py output (D5-1): chosen (K, lam, wind layer) unit-source fields (13, ny, nx) of the 13 sources; optional second unit_response_fn (kappa absorbs k x scale x q) [plan 4.2b]
 LIB_REPORT_STEPS = PF_ADJ_REPORT_STEPS     # posterior of the true candidate reported after these RL steps [plan D5-4]
 LIB_TEST_KAPPA_DECADES = (-1.5, 0.0, 1.5)  # tests/test_library_filter.py: kappa_true = KAPPA_REF x 10^d - the selection must not depend on the truth scale [plan D5-4]
+# --------------------------------------------------------------------------------------
+# T1-4 decisive real-data test of the RB-PF forward models  [plan S1 T1-4, G1; scripts/validate_t1_4.py,
+# tests/test_validate_t1_4.py; figure 5 input (T1-5 snapshots)]  -- appended D6-1
+# --------------------------------------------------------------------------------------
+T1_4_FRAME_INDEX = LIB_FRAME_INDEX                 # truth = LDM slab frame 599 (step 30000), z = DRONE_Z, the same slab as validate_library_filter [plan T1-4]
+T1_4_SENSOR_SCALE = LIB_SENSOR_SCALE               # detector scale 1 -> kappa_true = SENSOR_K0 x q; counts drawn exactly as validate_library_filter.run_filter (same rng stream [seed, source, 1]) so every filter sees the identical sequence [plan T1-4]
+T1_4_N_SEEDS = LIB_N_SEEDS                         # 5 Poisson / PF seeds per source [plan D6-1]
+T1_4_N_STEPS = PF_ADJ_N_STEPS                      # 150 RL steps x PF_ADJ_N_DRONES drones on the validate_pf_adjoint.two_drone_paths lawnmower [plan T1-4]
+T1_4_CHECKPOINT_STEPS = (25, 50, 100, 150)         # MAP error recorded after these RL steps [plan D6-1]
+T1_4_ENTROPY_STEPS = (0, 50, 150)                  # belief entropy recorded at these steps (0 = prior) [plan D6-1]
+T1_4_GMM_EVERY = 5                                 # success test (GMM top sigma < SUCCESS_SIGMA_M and MAP error < SUCCESS_ERROR_M) evaluated every 5 steps to limit the EM cost [plan D6-1]
+T1_4_GMM_SEED = 0                                  # rng seed of the weighted k-means++ initialisation of summarise_pf (deterministic success test) [plan D6-1]
+T1_4_ANALYTIC_U = 1.68                             # filter A: GaussianPlume global wind, chosen T1-3 combination (calibrate_forward.json chosen: U 1.68, sigma_v 0.9) [plan T1-3 결과]
+T1_4_ANALYTIC_SIGMA_V = 0.9                        # [plan T1-3 결과]
+T1_4_ADJOINT_K = 8.0                               # filter B: LbmAdjointModel, chosen T1-3b combination (calibrate_adjoint.json chosen: K 8, lam 0.005, single 15 m wind; validation_log 전방모델 결정 2026-09-30) [plan T1-3b 결과]
+T1_4_ADJOINT_LAM = 0.005                           # [plan T1-3b 결과]
+T1_4_FILTER_EPS = {"A": PF_EPS_MIX, "A2": PF_EPS_MIX_TRAPPED, "B": PF_EPS_MIX, "B2": PF_EPS_MIX_TRAPPED}   # robust mixture eps per filter label: A/B = 0.05, A2/B2 = 0.1 (trapped-source variant, plan S1 보강) [plan D6-1]
+T1_4_FINAL_ERROR_PASS_M = PF_ADJ_MAP_ERROR_PASS_M  # G1 (i)/(ii): open sources (T1_3_OPEN_SOURCES) median final MAP error < 30 m [plan T1-4 / G1]
+T1_4_EPS_REPORT_SOURCES = (102, 106)               # G1 (iv): trapped 102 (observable trapped source) and 106 (roof-leak test case) reported with eps 0.05 vs 0.1 [plan D6-1]
+T1_4_UNOBSERVABLE_SOURCE = 110                     # G1 (v): enclosed courtyard at 15 m (validation_log 고정 고도 15 m의 관측 한계) [plan D6-1]
+T1_4_UNOBSERVABLE_COUNT_FACTOR = 1.5               # 'unobservable at 15 m' iff max expected count along the path <= 1.5 x background counts (b T = 20 -> 30) [plan D6-1]
+T1_4_SNAPSHOT_SOURCES = (109, 102)                 # belief snapshots (seed 0, filter B, every T1_4_GMM_EVERY steps) saved to CACHE_DIR / t1_4_snapshots_{src}.npz for T1-5 / figure 5 [plan T1-5]
+T1_4_SNAPSHOT_FILTER = "B"                         # [plan T1-5]
+T1_4_FIG_REF_LINES_M = (30.0, 20.0)                # figure reference lines: the 30 m open-source criterion and SUCCESS_ERROR_M [plan G1, 4.5]
+T1_4_FIG_YLIM_M = (1.0, 1000.0)                    # log y range of the error panels [plan D6-1]
+# --------------------------------------------------------------------------------------
+# T1-5 GMM summary fidelity on the T1-4 belief snapshots  [plan S1 T1-5, 4.4 (R7); scripts/validate_t1_5.py,
+# tests/test_validate_t1_5.py; figure 5]  -- appended D6-2b
+# --------------------------------------------------------------------------------------
+T1_5_SNAPSHOT_SOURCES = T1_4_SNAPSHOT_SOURCES      # (109 open, 102 trapped): CACHE_DIR / t1_4_snapshots_{src}.npz written by validate_t1_4 (filter B, seed 0, every T1_4_GMM_EVERY steps) [plan T1-5]
+T1_5_GMM_SEED = T1_4_GMM_SEED                      # rng seed of the weighted k-means++ initialisation per snapshot (same seed as the T1-4 success test) [plan D6-2b]
+T1_5_MATCH_RADIUS_M = 30.0                         # order_flip_rate: components of consecutive snapshots are matched by nearest mean within this radius (gmm_summary default) [plan 4.4]
+T1_5_TV_CELL_INFO_M = PF_ENTROPY_CELL_M            # informational second TV cell (20 m = the entropy / MAP cell): the 10 m criterion cell holds ~0.2 particles per cell under the uniform prior, so the early-step TV is sampling-noise dominated [plan D6-2b 진단]
+T1_5_FIG_STEPS = (10, 30, 60, 150)                 # figure 5 columns: the nearest saved snapshots (multiples of T1_4_GMM_EVERY) to these RL steps [plan T1-5 figure 5]
+T1_5_FIG_HALF_WIDTH_M = 250.0                      # figure 5 window: +-250 m around the true source [plan T1-5 figure 5]
+T1_5_FIG_ELLIPSE_SIGMAS = (1.0, 2.0)               # GMM component ellipses drawn at these Mahalanobis radii [plan T1-5 figure 5]
+T1_5_FIG_ELLIPSE_LW_M = (0.8, 3.0)                 # ellipse line width range [pt], linear in the component weight 0 -> 1 [plan D6-2b]
+T1_5_FIG_PARTICLE_SIZE = 4.0                       # scatter marker size of the particles (coloured by weight) [plan D6-2b]
+T1_5_TV_N_SUB = 5                                  # informational TV with the GMM mass integrated on n_sub x n_sub sub-cell quadrature points: the centre-point rule of total_variation_distance overestimates TV (0.25 vs 0.03) once the belief sd (3-5 m) is below the 10 m cell [측정 D6-2b]
+T1_5_TV_NOISE_N_REPEATS = 3                        # finite-N noise floor: TV of N i.i.d. samples from the fitted GMM itself vs the GMM mass (same cells, centre rule), averaged over this many seeded draws [plan D6-2b 진단]
+T1_5_FIG_INSET_HALF_WIDTH_M = 30.0                 # figure 5: zoom inset (+-30 m around the MAP) drawn when the top sigma is below T1_5_FIG_INSET_SIGMA_M [plan D6-2b]
+T1_5_FIG_INSET_SIGMA_M = SUCCESS_SIGMA_M           # [plan 4.5]
+
+# ---- D6-1 review (2026-09-30): source-110 observability rule aligned with D5-2 / validation_log 결정 ('고정 고도 15 m의 관측 한계')
+T1_4_UNOBSERVABLE_USE_CURRIE = True                # G1 (v): also 'unobservable at 15 m' when the max expected count along the path is below the Currie decision threshold Detector.detection_threshold_cps() x T (33.4 counts; the rule of validate_pf_adjoint); the 1.5 x background rule alone (30) misses 110 (32.0 counts, belief entropy 7.1 -> 7.0 nats) [D6-1 review, validation_log 결정 2026-09-30]
