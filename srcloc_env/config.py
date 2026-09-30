@@ -326,3 +326,55 @@ T1_5_TV_CELL_M = 10.0          # histogram cell for the GMM-vs-PF total-variatio
 T1_5_TV_MAX = 0.2              # pass: TV distance < 0.2 [plan S1 T1-5]
 T1_5_FLIP_MAX = 0.1            # pass: component-order flip rate between consecutive steps < 10% [plan S1 T1-5]
 GMM_MERGE_BHAT = 0.25          # merge EM components with Bhattacharyya distance below this (~1.4 sigma apart for equal covariances) [계산, plan 4.4 permutation stability]
+
+# --------------------------------------------------------------------------------------
+# D5-2 PF <-> LBM adjoint connection (plan 4.2b 검증 "갱신당 시간 <= 20 ms", S1 T1-2 lite with the LBM model;
+# scripts/validate_pf_adjoint.py, tests/test_pf_adjoint.py)  -- appended D5-2
+# --------------------------------------------------------------------------------------
+PF_ADJ_SOURCES = (109, 110, 101, 113)      # open 109 (holdout), trapped courtyard 110, two more open sources 101 / 113 (report 2.6) [plan D5-2]
+PF_ADJ_N_SEEDS = 5                         # Poisson + PF seeds per source [plan D5-2]
+PF_ADJ_N_STEPS = 150                       # RL steps per synthetic run (plan T1-4: 2대 lawnmower 150 스텝) [plan T1-4]
+PF_ADJ_N_DRONES = 2                        # drones per run, fused sequentially on one RBPF (plan 4.3) [plan T1-4]
+PF_ADJ_REPORT_STEPS = (50, 100, 150)       # MAP error reported after these RL steps [plan D5-2]
+PF_ADJ_SWEEP_WIDTH_M = 100.0               # y sweep width of each drone's sawtooth lawnmower; the two drones cover adjacent bands [plan D5-2]
+PF_ADJ_START_DOWNWIND_M = 250.0            # start x = x_s + 250 m (>= 200 m from the source, plan D5-2), then fly -x (upwind) with DRONE_STEP_M in x per step [plan D5-2]
+PF_ADJ_MAP_ERROR_PASS_M = 30.0             # expectation: open sources median MAP error < 30 m after PF_ADJ_N_STEPS (plan T1-4 open-source criterion) [plan T1-4]
+PF_ADJ_UPDATE_TIME_TARGET_S = 0.02         # plan 4.2b: one drone update (adjoint solve + interpolation + likelihood) median < 20 ms [plan 4.2b]
+PF_ADJ_TIMING_N_BREAKDOWN = 50             # calls per component in the timing breakdown (adjoint solve / interpolation / likelihood) [plan D5-2]
+PF_ADJ_FIG_HALF_WIDTH_M = 200.0            # belief-scatter panel: +-200 m window around the source [plan D5-2]
+PF_ADJ_TEST_N_MEASUREMENTS = 60            # unit test: MAP error < PF_ADJ_TEST_MAP_ERROR_CELLS cells after this many measurements on the 40 x 30 synthetic grid [plan D5-2]
+PF_ADJ_TEST_MAP_ERROR_CELLS = 2.0          # unit test pass criterion in grid cells [plan D5-2]
+# --------------------------------------------------------------------------------------
+# T1-3b adjoint-model calibration  [plan 4.2b 캘리브레이션, S1 T1-3b; docs/lbm_forward_model.md 6; scripts/calibrate_adjoint.py]  -- appended D5-1
+# --------------------------------------------------------------------------------------
+T1_3B_WIND_LAYERS: dict[str, tuple[float, float] | None] = {"single_15m": None, "band_10_20m": (10.0, 20.0)}   # wind layer candidates of the adjoint operator: single 15 m wind (AdjointParams.wind_band None) vs per-cell mean over the stored LBM levels in [10, 20) m (11.25/13.75/16.25/18.75) [plan 4.2b, lbm_forward_model.md 6]
+T1_3B_SELECTION_KEY = "mean_train_std_dense"        # T1-3b selection statistic: mean over TRAIN_SOURCES of std(rho') on the dense cells (n_LDM >= T1_3_INFO_DENSITY_FRACTION x source max); the plain std is fringe-dominated (validation_log "T1-3 FAIL의 해석") and its argmin is reported next to it [결정 D5-1]
+T1_3B_G_MIN = T1_3_G_FLOOR_FACTOR * FWD_G_FLOOR       # 1e-8 (particles/m^3)/(particle/s): a cell counts as "model present" only above this, the same floor rule as calibrate_forward (D4-3); g == 0 exactly marks the support mismatch (wall cell / other free component) [plan D5-1]
+# --------------------------------------------------------------------------------------
+# T1-2 kappa-marginalisation bias check  [plan S1 T1-2, 4.3 (R5 Rao-Blackwellisation); scripts/validate_kappa_bias.py,
+# tests/test_kappa_bias.py; figure 4]  -- appended D5-3
+# --------------------------------------------------------------------------------------
+T1_2_CASES = (("analytic", 109), ("analytic", 101), ("adjoint", 109))   # (forward model, true source): GaussianPlume (global, config defaults) for 109 and 101; LbmAdjointModel (real 15 m wind, default AdjointParams) for 109 [plan D5-3]
+T1_2_N_REPEATS = 20                     # seeded repeats per case (kappa_true, Poisson counts, PF prior draw) [plan D5-3]
+T1_2_N_STEPS = 100                      # lawnmower steps per drone: PF_ADJ_N_DRONES x 100 = 200 measurements per repeat [plan D5-3]
+T1_2_KAPPA_TRUE_DECADES = 1.0           # kappa_true ~ log-uniform KAPPA_REF x 10^[-1, +1] per repeat [plan D5-3]
+T1_2_KAPPA_FIXED_FACTORS = (3.0, 0.3)   # filters (iii) / (iv): kappa fixed at these multiples of kappa_true [plan T1-2]
+T1_2_FIXED_KAPPA_DECADES = 1e-6         # a "fixed kappa" filter = RBPF with n_grid = 2 and this half-width (node ratio 10^(2e-6) = 1 + 4.6e-6): RBPF requires n_grid >= 2, grid_decades > 0, so the plan's (grid_decades 0, n_grid 1) is realised as this degenerate grid [plan D5-3, 결정]
+T1_2_REPORT_MEASUREMENTS = (50, 100, 150, 200)   # MAP error recorded after these measurement counts [plan D5-3]
+T1_2_MAP_DIFF_PASS_M = 10.0             # PASS 1: median over repeats of |MAP_xy(ii RB-PF) - MAP_xy(i kappa known)| < 10 m [plan T1-2]
+T1_2_TEST_N_PARTICLES = 300             # unit-test sizes (tests/test_kappa_bias.py): N, steps per drone (2 x 20 = 40 measurements), repeats [plan D5-3]
+T1_2_TEST_N_STEPS = 20
+T1_2_TEST_N_REPEATS = 2
+# --------------------------------------------------------------------------------------
+# Library candidate filter  [plan 4.2 라이브러리 모델, S1 라이브러리 필터 상한 / T1-4; pf/library_filter.py;
+# scripts/validate_library_filter.py, tests/test_library_filter.py]  -- appended D5-4
+# --------------------------------------------------------------------------------------
+LIB_FRAME_INDEX = N_FILES - 1              # measurements and library responses from slab frame index 599 (step 30000), z = DRONE_Z [plan T1-4]
+LIB_N_SEEDS = 5                            # Poisson seeds per true source [plan D5-4]
+LIB_N_STEPS = PF_ADJ_N_STEPS               # 150 RL steps x PF_ADJ_N_DRONES drones (plan T1-4 "2대 lawnmower 150 스텝"); path = validate_pf_adjoint.two_drone_paths [plan T1-4]
+LIB_START_MIN_DISTANCE_M = 200.0           # every drone must start >= 200 m from the true source (plan T1-4); the lawnmower starts PF_ADJ_START_DOWNWIND_M = 250 m downwind [plan T1-4]
+LIB_POSTERIOR_PASS = 0.9                   # "identified": posterior of the true candidate > 0.9 (steps-to-0.9 statistic) [plan D5-4]
+LIB_SENSOR_SCALE = 1.0                     # validate_library_filter detector scale: kappa_true = SENSOR_K0 x scale = 1000 for the library model (1.93 decades below KAPPA_REF, inside the +-3 decade grid with 1.07 decade margin) [plan 4.2 caveat, 계산]
+LIB_ADJOINT_FIELDS_NPZ = CACHE_DIR / "adjoint_fields_chosen.npz"   # calibrate_adjoint.py output (D5-1): chosen (K, lam, wind layer) unit-source fields (13, ny, nx) of the 13 sources; optional second unit_response_fn (kappa absorbs k x scale x q) [plan 4.2b]
+LIB_REPORT_STEPS = PF_ADJ_REPORT_STEPS     # posterior of the true candidate reported after these RL steps [plan D5-4]
+LIB_TEST_KAPPA_DECADES = (-1.5, 0.0, 1.5)  # tests/test_library_filter.py: kappa_true = KAPPA_REF x 10^d - the selection must not depend on the truth scale [plan D5-4]
