@@ -64,3 +64,17 @@ Keats, Yee, Lien(2007, R17)이 도시 CFD 유동장에서 정확히 이 방식�
 - 정상 유동 가정: 시간 변화 유동장이 오면 스냅샷별로 A를 다시 조립(1 s).
 - 5 m 격자의 수치확산은 K에 흡수되므로 K의 물리적 해석은 제한적.
 - 발표 문구 예: "the forward model is a steady 2-D advection–diffusion source–receptor (adjoint) model driven by the LBM wind field, calibrated against the LDM fields (Keats et al. 2007 approach adapted to a particle filter with mobile sensors)".
+
+## 9. 구현·캘리브레이션 결과 (2026-09-30, D4-4·D5-1·D5-2 기준)
+
+| 항목 | 결과 |
+|---|---|
+| 연산자 | 5 m 격자 41,400셀 중 자유 셀 35,793(지붕 ≥ 15 m 제외); 조립 0.3 s, LU 분해 0.3 s; adjoint 해 1회 중앙값 5.8 ms |
+| 수치 검증 | 상호성 1e-15, 질량 보존 잔차 2e-16, 균일풍 원거리 Gaussian 일치 |
+| 캘리브레이션(T1-3b) | K 8 m²/s, λ 0.005 1/s, 15 m 단일 바람(10~20 m 평균과 차이 없음); 두 값이 후보 격자 가장자리 |
+| 형상 잔차(밀집 셀 std ρ′) | 개방 소스 1.00~1.65(해석 플룸 1.22~2.63), 정체 110 1.11(2.84), 102 1.21(2.62); 13/13 소스에서 해석 플룸보다 작음 |
+| PF 연결 | RBPF 갱신 miss 9.6 ms / hit 4.0 ms(LRU 512); 합성 진실에서 개방 소스 MAP 오차 4~11 m |
+| 한계 확인 | 15 m에서 완전히 닫힌 안뜰(110)은 응답이 밖에서 0이고 드론도 진입 불가 → 관측 불가 사례; 106은 데이터가 안뜰 밖으로 새지만 모델은 갇힘(지붕 위 누출 미표현) |
+| implied κ_ref | 5.1e4(해석 플룸 1.7e4, 설정 8.4e4; 모두 ±3 decade 격자 안) |
+
+수식·코드 대응: `AdvectionDiffusionOperator._assemble`(유한체적), `solve_adjoint`(Aᵀψ = e_p, SuperLU trans='T'), `LbmAdjointModel.unit_response`(수신 셀 LRU + 가설 위치 이중선형 보간).
