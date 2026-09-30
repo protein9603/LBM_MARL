@@ -311,3 +311,18 @@ T1_3_FIG_ARROW_M = 60.0                            # drawn length of the model w
 ADJ_SPLU_PERMC_SPEC = "MMD_AT_PLUS_A"   # SuperLU column ordering: 35 % less fill than COLAMD on the 5-point operator (L+U 0.99 M vs 1.5 M nnz), adjoint solve 3.9 vs 6 ms [측정 D4-4]
 ADJ_SPLU_SYMMETRIC_MODE = True          # SuperLU SymmetricMode (structurally symmetric pattern): factorisation 0.17 s instead of 1.96 s with MMD_AT_PLUS_A [측정 D4-4]
 T1_3_INFO_DENSITY_FRACTION = 0.01                  # informational only (not the selection statistic): std(rho') restricted to cells with n_LDM > 1 % of the source's slab maximum, i.e. above the single-particle fringe (an isolated particle gives concn 0.2514 / 15.625 = 0.016 particles/m^3, report 2.1) [plan D4-3 진단]
+
+# --------------------------------------------------------------------------------------
+# GMM belief summary  [plan 4.4, R7 Park/Ladosz/Oh 2022; pf/gmm_summary.py]
+# --------------------------------------------------------------------------------------
+GMM_EM_ITERS = 20              # weighted EM iterations per RL step [plan 4.4]
+GMM_MIN_WEIGHT = 0.02          # components below this weight are zero-padded and masked [plan 4.4]
+GMM_COV_REG_M2 = 1.0           # diagonal covariance floor (1 m)^2 to avoid singular components [계산]
+GMM_NORM_XY = (1315.0, 657.5)  # position normalisation (domain extent x, |y|) [plan 4.4]
+GMM_NORM_COV_M2 = 1.0e4        # covariance normalisation (100 m)^2 [plan 4.4]
+GMM_NORM_REL_M = 1000.0        # drone-relative mean normalisation [plan 4.4]
+GMM_VECTOR_DIM = GMM_K * 6 + GMM_K + GMM_K * 2   # 27 = K x (w, mux, muy, sxx, syy, sxy) + mask K + relative K x 2 [plan 4.4]
+T1_5_TV_CELL_M = 10.0          # histogram cell for the GMM-vs-PF total-variation fidelity check [plan S1 T1-5]
+T1_5_TV_MAX = 0.2              # pass: TV distance < 0.2 [plan S1 T1-5]
+T1_5_FLIP_MAX = 0.1            # pass: component-order flip rate between consecutive steps < 10% [plan S1 T1-5]
+GMM_MERGE_BHAT = 0.25          # merge EM components with Bhattacharyya distance below this (~1.4 sigma apart for equal covariances) [계산, plan 4.4 permutation stability]
