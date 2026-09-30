@@ -2,6 +2,8 @@
 
 Usage: python -m srcloc_env.scripts.validate_t1_4 [--seed 0] [--n-seeds 5] [--n-steps 150] [--sources 109 102]
                                                   [--filters A B] [--out ...] [--fig ...]
+                                                  [--likelihood poisson|negbin] [--nb-r 1.0] [--mode F|T]
+                                                  [--baseline-json ...] [--timeavg-json ...]
 Writes config.CACHE_DIR / validate_t1_4.json, config.CACHE_DIR / t1_4_snapshots_{src}.npz (T1-5 / figure 5 input)
 and config.FIG_DIR / fig_t1_4_errors.png (config.FIG_DPI_FINAL) + _preview.png (config.FIG_DPI_PREVIEW).
 
@@ -12,8 +14,19 @@ config.DRONE_STEP_M, adjacent config.PF_ADJ_SWEEP_WIDTH_M bands, start config.PF
 drone-free cells only) and the counts y ~ Poisson((k0 scale n_s(p) + b) T) are drawn ONCE per (source, seed) with
 Detector.measure and rng [seed, source, 1] (R3, plan 4.1), then the SAME sequence is fed to every filter.
 
+Truth mode (D7-2; plan 1 시간 모드, config.T1_4_MODES): --mode F (default) is the fixed snapshot above (D6 behaviour);
+--mode T is the time-varying truth: RL step t reads frame index frame_index_mode_t(t) = min(config.N_FILES - 1,
+round(config.T1_4_MODE_T_START_INDEX + config.FILES_PER_RL_STEP t)) (1.6 files per step, zero-order hold, both drones
+of a step share the frame).  The per-step densities are gathered once per source by mode_t_densities (frames visited
+in ascending order, all sources' points of a frame in one vectorised query) and reused by every seed and filter; the
+Poisson draw uses the same rng stream.  Mode T changes the truth (the plume grows and moves between frames), so its
+errors are not directly comparable with Mode F on one axis.
+
 Filters (all RBPF, N = config.PF_N_PARTICLES, grid mode, kappa grid from config, obstacles = ObstacleMap.load(),
-PF rng [seed, 2] per repeat; plan 4.3):
+PF rng [seed, 2] per repeat, count likelihood --likelihood 'poisson' (R3) or 'negbin' with dispersion --nb-r
+(Gamma-Poisson, R22 / R23; D7-1).  Defaults = the D7-3 configuration config.T1_4_D7_3_LIKELIHOOD ('negbin') and
+config.T1_4_D7_3_NB_R_MODE_F / _MODE_T (1.0 / 3.0 by --mode), so a flag-less run reproduces the D7-3 gate input;
+the D6 Poisson baseline needs --likelihood poisson (D7-3 review); plan 4.3):
     A   GaussianPlume(global, ForwardParams(U = config.T1_4_ANALYTIC_U, sigma_v = config.T1_4_ANALYTIC_SIGMA_V)),
         eps_mix = config.PF_EPS_MIX (the T1-3 chosen combination, calibrate_forward.json)
     A2  the same with eps_mix = config.PF_EPS_MIX_TRAPPED (plan S1 보강)
@@ -42,6 +55,18 @@ Currie decision threshold Detector.detection_threshold_cps() x T when config.T1_
 rule of validate_pf_adjoint / validation_log 결정 '고정 고도 15 m의 관측 한계').
 ``table1_markdown`` builds the Table 1 string (source | type | analytic / adjoint std_dense from the calibration
 JSONs | A / B final error med/p90 | A / B success rate | library first step | max count).
+
+Final Table 1 and G1 re-judgement (D7-3; plan S1 T1-4 산출물 / G1, 4.3 강건화): when --baseline-json
+(config.T1_4_POISSON_BASELINE_JSON = the D6 Poisson / Mode F run, copied before the re-run) exists, ``table1_final_markdown``
+puts the baseline and the re-run (negative-binomial likelihood, R22 / R23; D7-2 recommendation r = config.T1_4_D7_3_NB_R_MODE_F)
+final errors side by side: source | type | analytic / adjoint std_dense | A(Poisson) | A(NB) | B(Poisson) | B(NB) final err
+med/p90 | B(NB) success | library first step | max count, tags the unobservable source and annotates
+config.T1_4_OFFSET_SOURCE (109) with its systematic 15 m offset read from --timeavg-json (config.T1_4_TIMEAVG_JSON,
+calibrate_timeavg.py 'offset_report'; T1-3c).  ``final_verdicts`` re-judges G1 per source: open sources
+(config.T1_3_OPEN_SOURCES) < config.T1_4_FINAL_ERROR_PASS_M for A(NB) and B(NB), and the regression sources
+config.T1_4_REGRESSION_SOURCES (102 / 104 / 106, solved by B(Poisson) in D6) not regressed: B(NB) median final error <=
+max(config.D7_2_REGRESSION_TOLERANCE x B(Poisson) median, pass_m) per source, plus the D7-2 pooled rule (median over
+the regression sources <= tolerance x its Poisson value).
 
 Figure fig_t1_4_errors.png: (left) per-source grouped bars of the median final MAP error for A and B with p90
 whiskers, 30 m / 20 m reference lines, sources coloured open / trapped / holdout / train, the unobservable source
@@ -106,14 +131,77 @@ def colour_group(s: int) -> str:
 
 
 # ---------------------------------------------------------------------------------------- measurements
+def frame_index_mode_t(t: int, start: int = config.T1_4_MODE_T_START_INDEX,
+                       files_per_step: float = config.FILES_PER_RL_STEP, n_files: int = config.N_FILES) -> int:
+    """Mode T frame index of RL step t (0-based): min(n_files - 1, round(start + files_per_step t)) (plan 1 시간 모드:
+    config.FILES_PER_RL_STEP = 1.6 files per RL step under interpretation A, zero-order hold, capped at the last
+    cached frame; D7-2)."""
+    if t < 0:
+        raise ValueError("t must be >= 0")
+    return int(min(n_files - 1, round(start + files_per_step * t)))
+
+
+def frame_schedule_mode_t(n_steps: int, start: int = config.T1_4_MODE_T_START_INDEX,
+                          files_per_step: float = config.FILES_PER_RL_STEP, n_files: int = config.N_FILES) -> np.ndarray:
+    """(n_steps,) int64 frame indices frame_index_mode_t(t) for t = 0 .. n_steps - 1 (vectorised; np.round is
+    round-half-even like Python's round)."""
+    t = np.arange(int(n_steps), dtype=np.float64)
+    return np.minimum(n_files - 1, np.round(start + files_per_step * t)).astype(np.int64)
+
+
+def mode_t_densities(backend: LdmSlabBackend, paths_by_source: dict[int, np.ndarray], z: float = config.DRONE_Z,
+                     start: int = config.T1_4_MODE_T_START_INDEX, files_per_step: float = config.FILES_PER_RL_STEP,
+                     n_files: int = config.N_FILES) -> dict[int, np.ndarray]:
+    """Mode T truth densities {source: (n_steps, n_drones)} [particles/m^3] along paths_by_source[source]
+    (n_steps, n_drones, 2): RL step t is read from frame frame_index_mode_t(t) (plan 1 시간 모드; D7-2).
+
+    The frames are visited once in ascending order (LdmSlabBackend loads ~0.25 s per frame; 150 steps -> ~150
+    frames) and every source's points of a frame are gathered in one vectorised density query, so one pass serves
+    all sources, seeds and filters."""
+    out: dict[int, np.ndarray] = {}
+    if not paths_by_source:
+        return out
+    arrs = {int(s): np.asarray(p, dtype=np.float64) for s, p in paths_by_source.items()}
+    n_max = max(a.shape[0] for a in arrs.values())
+    schedule = frame_schedule_mode_t(n_max, start, files_per_step, n_files)
+    for s, a in arrs.items():
+        out[s] = np.zeros(a.shape[:2], dtype=np.float64)
+    for frame in np.unique(schedule):
+        steps = np.flatnonzero(schedule == frame)
+        for s, a in arrs.items():
+            st = steps[steps < a.shape[0]]
+            if st.size == 0:
+                continue
+            out[s][st] = backend.density([s], a[st].reshape(-1, 2), int(frame), z, 1.0).reshape(st.size, a.shape[1])
+    return out
+
+
+def truth_densities(backend: LdmSlabBackend, source: int, paths: np.ndarray, mode: str = "F",
+                    frame_index: int = config.T1_4_FRAME_INDEX, z: float = config.DRONE_Z) -> np.ndarray:
+    """(n_steps, n_drones) truth densities [particles/m^3] of ``source`` along paths (n_steps, n_drones, 2):
+    mode 'F' = the fixed slab frame frame_index (D6), mode 'T' = mode_t_densities (config.T1_4_MODES; D7-2)."""
+    if mode not in config.T1_4_MODES:
+        raise ValueError(f"mode must be one of {config.T1_4_MODES}, got {mode!r}")
+    n_steps, n_drones = paths.shape[:2]
+    if mode == "F":
+        return backend.density([source], paths.reshape(-1, 2), frame_index, z, 1.0).reshape(n_steps, n_drones)
+    return mode_t_densities(backend, {int(source): paths}, z)[int(source)]
+
+
 def generate_measurements(backend: LdmSlabBackend, det: Detector, source: int, paths: np.ndarray, seed: int,
                           frame_index: int = config.T1_4_FRAME_INDEX, z: float = config.DRONE_Z,
-                          scale: float = config.T1_4_SENSOR_SCALE) -> tuple[np.ndarray, np.ndarray]:
+                          scale: float = config.T1_4_SENSOR_SCALE, mode: str = "F",
+                          densities: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
     """(counts, expected) both (n_steps, n_drones): slab-truth Poisson counts along paths (n_steps, n_drones, 2),
-    drawn with the rng stream [seed, source, 1] of validate_library_filter.run_filter (identical sequences)."""
+    drawn with the rng stream [seed, source, 1] of validate_library_filter.run_filter (identical sequences).
+
+    mode 'F' (default) reads the fixed frame frame_index (bit-identical to D6), mode 'T' the time-varying frames of
+    truth_densities (D7-2); ``densities`` (n_steps, n_drones), when given, replaces the field query (the per-source
+    Mode T cache shared by all seeds and filters).  The Poisson draw is the same rng stream in both modes."""
     n_steps, n_drones = paths.shape[:2]
-    flat = paths.reshape(-1, 2)
-    dens = backend.density([source], flat, frame_index, z, 1.0)
+    if densities is None:
+        densities = truth_densities(backend, source, paths, mode, frame_index, z)
+    dens = np.asarray(densities, dtype=np.float64).reshape(-1)
     rng = np.random.default_rng([int(seed), int(source), 1])
     counts = det.measure(dens, scale, rng).reshape(n_steps, n_drones)
     expected = det.expected_counts(dens, scale).reshape(n_steps, n_drones)
@@ -325,11 +413,138 @@ def table1_markdown(agg: dict[str, dict[str, dict]], sources: Sequence[int], ana
     return "\n".join(rows)
 
 
+# ---------------------------------------------------------------------------------------- final table (D7-3)
+def load_baseline(path: Path) -> dict | None:
+    """The Poisson baseline T1-4 JSON (config.T1_4_POISSON_BASELINE_JSON) reduced to {path, created, mode, likelihood,
+    nb_r, n_seeds, aggregates}; None if the file is missing (plan D7-3)."""
+    p = Path(path)
+    if not p.exists():
+        return None
+    d = json.loads(p.read_text(encoding="utf-8"))
+    pf = d.get("pf", {})
+    return {"path": str(p), "created": d.get("created"), "mode": d.get("mode", "F"),
+            "likelihood": pf.get("likelihood", "poisson"), "nb_r": pf.get("nb_r"), "n_seeds": d.get("n_seeds"),
+            "aggregates": d.get("aggregates", {})}
+
+
+def load_offset_report(path: Path, source: int) -> dict | None:
+    """The calibrate_timeavg.json 'offset_report' entry of ``source`` (T1-3c: distance / direction of the 15 m slab
+    maximum from the source in the time-averaged and the instantaneous field, the adjoint model and the local wind);
+    None if the file or the source is missing (plan D7-3)."""
+    p = Path(path)
+    if not p.exists():
+        return None
+    d = json.loads(p.read_text(encoding="utf-8"))
+    rep = d.get("offset_report", {}).get(str(int(source)))
+    return None if rep is None else dict(rep)
+
+
+def offset_annotation(rep: dict | None, frame_index: int = config.T1_4_FRAME_INDEX) -> str:
+    """Table 1 note of a systematic offset from an offset_report entry, e.g. '[systematic offset: 15 m slab peak 30 m
+    (time mean) / 81 m (frame 599) from the source, 10-22 deg; wind 13 deg]' (validation_log 'G1 FAIL 원인과 치료':
+    109's 15 m maximum lies downwind of the release); a placeholder when T1-3c was not run."""
+    if not rep:
+        return "[systematic offset (T1-3c offset report missing)]"
+    parts = []
+    if rep.get("mean_peak_distance_m") is not None:
+        parts.append(f"{float(rep['mean_peak_distance_m']):.0f} m (time mean)")
+    if rep.get("instantaneous_peak_distance_m") is not None:
+        parts.append(f"{float(rep['instantaneous_peak_distance_m']):.0f} m (frame {frame_index})")
+    dirs = [float(rep[k]) for k in ("mean_peak_direction_deg", "instantaneous_peak_direction_deg") if rep.get(k) is not None]
+    d = f", {min(dirs):.0f}-{max(dirs):.0f} deg" if dirs else ""
+    w = f"; wind {float(rep['wind_dir_deg']):.0f} deg" if rep.get("wind_dir_deg") is not None else ""
+    return "[systematic offset: 15 m slab peak " + " / ".join(parts) + f" from the source{d}{w}]"
+
+
+def _err_cell(a: dict | None) -> str:
+    return "n/a" if a is None else f"{_fmt(a['final_error_median'])} / {_fmt(a['final_error_p90'])}"
+
+
+def table1_final_markdown(agg_nb: dict[str, dict[str, dict]], agg_poisson: dict[str, dict[str, dict]],
+                          sources: Sequence[int], analytic_std: dict[int, float], adjoint_std: dict[int, float],
+                          library: dict[int, dict], max_counts: dict[int, float], unobservable: Sequence[int] = (),
+                          offset_source: int = config.T1_4_OFFSET_SOURCE, offset_note: str = "",
+                          nb_label: str = "NB") -> str:
+    """FINAL Table 1 (plan T1-4 산출물, D7-3): source | type | analytic std_dense | adjoint std_dense | A(Poisson) final
+    err med/p90 | A(NB) | B(Poisson) | B(NB) | B(NB) success rate | library first step (P > 0.9) | max count.
+    ``agg_poisson`` are the baseline aggregates (load_baseline), ``agg_nb`` the re-run's; the unobservable sources
+    are tagged '[unobservable at 15 m]' and ``offset_source`` carries ``offset_note`` (offset_annotation)."""
+    head = ("| source | type | analytic std_dense | adjoint std_dense | A(Poisson) final err med/p90 [m] "
+            f"| A({nb_label}) final err med/p90 [m] | B(Poisson) final err med/p90 [m] | B({nb_label}) final err med/p90 [m] "
+            f"| B({nb_label}) success | library first step P>0.9 (sel.) | max count |")
+    sep = "|" + "---|" * 11
+    rows = [head, sep]
+    for s in sources:
+        lib = library.get(s, {})
+        t = source_type(s)
+        if s in unobservable:
+            t += " [unobservable at 15 m]"
+        if s == offset_source and offset_note:
+            t += " " + offset_note
+        ap, an = agg_poisson.get("A", {}).get(str(s)), agg_nb.get("A", {}).get(str(s))
+        bp, bn = agg_poisson.get("B", {}).get(str(s)), agg_nb.get("B", {}).get(str(s))
+        rows.append(
+            f"| {s} | {t} | {_fmt(analytic_std.get(s), 2)} | {_fmt(adjoint_std.get(s), 2)} "
+            f"| {_err_cell(ap)} | {_err_cell(an)} | {_err_cell(bp)} | {_err_cell(bn)} "
+            f"| {_fmt(None if bn is None else 100 * bn['success_rate'])}% "
+            f"| {_fmt(lib.get('first_step_median'))} ({_fmt(None if lib.get('selection_rate') is None else 100 * lib['selection_rate'])}%) "
+            f"| {_fmt(max_counts.get(s))} |")
+    return "\n".join(rows)
+
+
+def final_verdicts(agg_nb: dict[str, dict[str, dict]], agg_poisson: dict[str, dict[str, dict]],
+                   open_sources: Sequence[int] = config.T1_3_OPEN_SOURCES,
+                   regression_sources: Sequence[int] = config.T1_4_REGRESSION_SOURCES,
+                   pass_m: float = config.T1_4_FINAL_ERROR_PASS_M,
+                   tolerance: float = config.D7_2_REGRESSION_TOLERANCE, filters: Sequence[str] = ("A", "B")) -> dict:
+    """D7-3 per-source re-judgement of G1 (plan S1 T1-4 / G1) from the re-run aggregates ``agg_nb`` and the Poisson
+    baseline ``agg_poisson``:
+      'open'       per filter in ``filters``: every open source's median final MAP error < pass_m (and whether it
+                   improved on the baseline);
+      'regression' filter B on ``regression_sources``: not regressed iff the NB median <= max(tolerance x Poisson
+                   median, pass_m) per source, plus the D7-2 pooled rule median_NB <= tolerance x median_Poisson;
+      'overall_pass' = all open blocks and the regression block pass."""
+    out_open: dict[str, dict] = {}
+    for f in filters:
+        per = {}
+        for s in open_sources:
+            n, p = agg_nb.get(f, {}).get(str(s)), agg_poisson.get(f, {}).get(str(s))
+            if n is None:
+                continue
+            per[str(s)] = {"nb_median_m": n["final_error_median"],
+                           "poisson_median_m": None if p is None else p["final_error_median"],
+                           "pass": bool(n["final_error_median"] < pass_m),
+                           "improved": None if p is None else bool(n["final_error_median"] < p["final_error_median"])}
+        out_open[f] = {"pass_m": pass_m, "per_source": per, "n_pass": int(sum(v["pass"] for v in per.values())),
+                       "n_sources": len(per), "overall_pass": bool(per) and all(v["pass"] for v in per.values())}
+    per_reg = {}
+    for s in regression_sources:
+        n, p = agg_nb.get("B", {}).get(str(s)), agg_poisson.get("B", {}).get(str(s))
+        if n is None or p is None:
+            continue
+        pm, nm = float(p["final_error_median"]), float(n["final_error_median"])
+        limit = max(tolerance * pm, pass_m)
+        per_reg[str(s)] = {"poisson_median_m": pm, "nb_median_m": nm, "ratio": (nm / pm) if pm > 0 else None,
+                           "limit_m": limit, "not_regressed": bool(nm <= limit),
+                           "poisson_success_rate": p["success_rate"], "nb_success_rate": n["success_rate"]}
+    pooled = None
+    if per_reg:
+        pm = float(np.median([v["poisson_median_m"] for v in per_reg.values()]))
+        nm = float(np.median([v["nb_median_m"] for v in per_reg.values()]))
+        pooled = {"poisson_median_m": pm, "nb_median_m": nm, "limit_m": tolerance * pm, "pass": bool(nm <= tolerance * pm)}
+    reg = {"tolerance": tolerance, "pass_m": pass_m, "per_source": per_reg, "pooled": pooled,
+           "overall_pass": bool(per_reg) and all(v["not_regressed"] for v in per_reg.values()) and bool(pooled and pooled["pass"])}
+    return {"open": out_open, "regression": reg,
+            "overall_pass": bool(out_open) and all(v["overall_pass"] for v in out_open.values()) and reg["overall_pass"]}
+
+
 # ---------------------------------------------------------------------------------------- figure
 def make_figure(agg: dict[str, dict[str, dict]], runs: dict[str, dict[int, list[dict]]], sources: Sequence[int],
-                unobservable: Sequence[int], path: Path, open_sources: Sequence[int] = config.T1_3_OPEN_SOURCES) -> None:
+                unobservable: Sequence[int], path: Path, open_sources: Sequence[int] = config.T1_3_OPEN_SOURCES,
+                truth_label: str = f"frame {config.T1_4_FRAME_INDEX}", likelihood_label: str = "") -> None:
     """Left: grouped bars (A, B) of the median final MAP error per source with p90 whiskers; right: pooled
-    open-source error-vs-step curves of the four filters."""
+    open-source error-vs-step curves of the four filters.  truth_label names the truth in the x label (Mode F frame
+    or the Mode T frame range; D7-2); likelihood_label (e.g. 'negbin r=1') is appended to the title (D7-3)."""
     fig, (ax, ax2) = plt.subplots(1, 2, figsize=(16.0, 6.0), constrained_layout=True, gridspec_kw={"width_ratios": [1.5, 1.0]})
     x = np.arange(len(sources))
     w = 0.38
@@ -349,7 +564,7 @@ def make_figure(agg: dict[str, dict[str, dict]], runs: dict[str, dict[int, list[
     ax.set_yscale("log")
     ax.set_ylim(*config.T1_4_FIG_YLIM_M)
     ax.set_xticks(x, [str(s) for s in sources], fontsize=8)
-    ax.set_xlabel("true source (LDM slab truth, frame 599, z = 15 m)")
+    ax.set_xlabel(f"true source (LDM slab truth, {truth_label}, z = {config.DRONE_Z:g} m)")
     ax.set_ylabel("final MAP error after 150 RL steps [m] (bar: median over seeds, whisker: p90)")
     ax.set_title("A analytic plume (light) vs B LBM adjoint (solid); hatched = unobservable at 15 m", fontsize=9.5)
     handles = [Patch(facecolor=TYPE_COLORS[k], label=f"{k} source") for k in ("open", "trapped", "holdout", "train")]
@@ -385,7 +600,8 @@ def make_figure(agg: dict[str, dict[str, dict]], runs: dict[str, dict[int, list[
         ax2.spines[sp].set_visible(False)
     fig.suptitle(f"T1-4: RB-PF on the LDM slab truth, 2-drone lawnmower, N = {config.PF_N_PARTICLES}, "
                  f"{config.T1_4_N_SEEDS} seeds; analytic U {config.T1_4_ANALYTIC_U} / sigma_v {config.T1_4_ANALYTIC_SIGMA_V}, "
-                 f"adjoint K {config.T1_4_ADJOINT_K} / lambda {config.T1_4_ADJOINT_LAM}", fontsize=11)
+                 f"adjoint K {config.T1_4_ADJOINT_K} / lambda {config.T1_4_ADJOINT_LAM}"
+                 + (f"; likelihood {likelihood_label}" if likelihood_label else ""), fontsize=11)
     path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(path, dpi=config.FIG_DPI_FINAL)
     fig.savefig(path.with_name(path.stem + "_preview" + path.suffix), dpi=config.FIG_DPI_PREVIEW)
@@ -423,7 +639,22 @@ def main(argv: list[str] | None = None) -> dict:
     ap.add_argument("--out", type=Path, default=config.CACHE_DIR / "validate_t1_4.json")
     ap.add_argument("--fig", type=Path, default=config.FIG_DIR / "fig_t1_4_errors.png")
     ap.add_argument("--snapshot-dir", type=Path, default=config.CACHE_DIR)
+    ap.add_argument("--likelihood", choices=list(config.PF_LIKELIHOODS), default=config.T1_4_D7_3_LIKELIHOOD,
+                    help="count likelihood of every filter: 'poisson' (R3) or 'negbin' (Gamma-Poisson, R22 / R23; D7-1); "
+                         "default = the D7-3 configuration config.T1_4_D7_3_LIKELIHOOD")
+    ap.add_argument("--nb-r", type=float, default=None,
+                    help="negative-binomial dispersion r (Var = lam + lam^2 / r) of --likelihood negbin; default = "
+                         "config.T1_4_D7_3_NB_R_MODE_F (mode F) / config.T1_4_D7_3_NB_R_MODE_T (mode T)")
+    ap.add_argument("--mode", choices=list(config.T1_4_MODES), default="F",
+                    help="truth mode: 'F' fixed slab frame config.T1_4_FRAME_INDEX (D6), 'T' time-varying frames "
+                         "frame_index_mode_t(t) from config.T1_4_MODE_T_START_INDEX (plan 1 Mode T; D7-2)")
+    ap.add_argument("--baseline-json", type=Path, default=config.T1_4_POISSON_BASELINE_JSON,
+                    help="Poisson / Mode F T1-4 JSON of the final Table 1 comparison and final_verdicts (D7-3); skipped if missing")
+    ap.add_argument("--timeavg-json", type=Path, default=config.T1_4_TIMEAVG_JSON,
+                    help="calibrate_timeavg.json (T1-3c offset_report) for the config.T1_4_OFFSET_SOURCE annotation; skipped if missing")
     args = ap.parse_args(argv)
+    if args.nb_r is None:                      # D7-3 defaults by truth mode (D7-2 recommendation)
+        args.nb_r = float(config.T1_4_D7_3_NB_R_MODE_F if args.mode == "F" else config.T1_4_D7_3_NB_R_MODE_T)
     sources = [int(s) for s in args.sources]
     filters = [f for f in FILTERS if f in args.filters]
 
@@ -434,6 +665,9 @@ def main(argv: list[str] | None = None) -> dict:
     analytic_std, analytic_chosen = load_calibration_std(config.CACHE_DIR / "calibrate_forward.json")
     adjoint_std, adjoint_chosen = load_calibration_std(config.CACHE_DIR / "calibrate_adjoint.json")
     library = load_library_summary(config.CACHE_DIR / "validate_library_filter.json")
+    baseline = load_baseline(args.baseline_json)                 # read BEFORE the run (--out may overwrite it) (D7-3)
+    offset_rep = load_offset_report(args.timeavg_json, config.T1_4_OFFSET_SOURCE)
+    nb_label = f"negbin r={args.nb_r:g}" if args.likelihood == "negbin" else args.likelihood
     cal_match = {"analytic": bool(analytic_chosen.get("U") == config.T1_4_ANALYTIC_U and analytic_chosen.get("sigma_v") == config.T1_4_ANALYTIC_SIGMA_V
                                   and analytic_chosen.get("wind_mode", "global") == "global"),
                  "adjoint": bool(adjoint_chosen.get("K") == config.T1_4_ADJOINT_K and adjoint_chosen.get("lam") == config.T1_4_ADJOINT_LAM
@@ -449,7 +683,8 @@ def main(argv: list[str] | None = None) -> dict:
         models["adjoint"] = LbmAdjointModel(op)
         setup["adjoint_seconds"] = time.perf_counter() - t0
         setup["adjoint_n_free"] = op.n_free
-    print(f"[setup] filters {filters}, sources {sources}, seeds {args.n_seeds}, steps {args.n_steps}; "
+    print(f"[setup] filters {filters}, sources {sources}, seeds {args.n_seeds}, steps {args.n_steps}; mode {args.mode}; "
+          f"likelihood {args.likelihood}" + (f" (r = {args.nb_r:g})" if args.likelihood == "negbin" else "") + "; "
           f"calibration match {cal_match}; setup {time.perf_counter() - t_start:.1f} s", flush=True)
 
     runs: dict[str, dict[int, list[dict]]] = {f: {} for f in filters}
@@ -457,22 +692,39 @@ def main(argv: list[str] | None = None) -> dict:
     max_counts: dict[int, float] = {}
     path_info: dict[str, list] = {}
     bg = det.background * det.T
+    paths_by_source: dict[int, np.ndarray] = {}
+    for s in sources:
+        paths_by_source[s], path_info[str(s)] = two_drone_paths(om, config.SOURCES_XY[s], args.n_steps)
+    t0 = time.perf_counter()
+    if args.mode == "T":                       # one ascending pass over the Mode T frames for all sources (D7-2)
+        densities = mode_t_densities(backend, paths_by_source)
+        schedule = frame_schedule_mode_t(args.n_steps)
+        truth_info: dict | None = {"start": config.T1_4_MODE_T_START_INDEX, "files_per_step": config.FILES_PER_RL_STEP,
+                                   "first_frame": int(schedule[0]), "last_frame": int(schedule[-1]),
+                                   "n_unique_frames": int(np.unique(schedule).size), "frames": schedule.tolist()}
+    else:
+        densities = {s: truth_densities(backend, s, paths_by_source[s], "F") for s in sources}
+        truth_info = None
+    truth_seconds = time.perf_counter() - t0
+    if args.mode == "T":
+        print(f"[truth] mode T densities for {len(sources)} sources: frames {truth_info['first_frame']}..{truth_info['last_frame']} "
+              f"({truth_info['n_unique_frames']} unique) in {truth_seconds:.0f} s", flush=True)
     for s in sources:
         true_xy = config.SOURCES_XY[s]
-        paths, info = two_drone_paths(om, true_xy, args.n_steps)
-        path_info[str(s)] = info
+        paths = paths_by_source[s]
         t_src = time.perf_counter()
         for f in filters:
             runs[f][s] = []
         for i in range(args.n_seeds):
             seed = args.seed + i
-            counts, expected = generate_measurements(backend, det, s, paths, seed)
+            counts, expected = generate_measurements(backend, det, s, paths, seed, mode=args.mode, densities=densities[s])
             max_counts[s] = float(expected.max())
             meas[f"{s}_{seed}"] = {"source": s, "seed": seed, "counts_sum": int(counts.sum()), "counts_max": int(counts.max()),
                                    "n_detections": int(det.is_detection(counts).sum()), "expected_max": float(expected.max())}
             for f in filters:
                 pf = RBPF(models[FILTER_MODEL[f]], n_particles=config.PF_N_PARTICLES, mode="grid", obstacles=om,
-                          eps_mix=config.T1_4_FILTER_EPS[f], rng=np.random.default_rng([seed, 2]))
+                          eps_mix=config.T1_4_FILTER_EPS[f], rng=np.random.default_rng([seed, 2]),
+                          likelihood=args.likelihood, nb_r=args.nb_r)
                 want_snap = bool(f == config.T1_4_SNAPSHOT_FILTER and i == 0 and s in config.T1_4_SNAPSHOT_SOURCES)
                 rec, snap = run_filter(pf, counts, paths, true_xy, snapshot=want_snap)
                 rec.update({"filter": f, "source": s, "seed": seed, "eps_mix": config.T1_4_FILTER_EPS[f]})
@@ -494,14 +746,26 @@ def main(argv: list[str] | None = None) -> dict:
     for f in filters:
         c = pooled_error_curve(runs[f], config.T1_3_OPEN_SOURCES)
         curves[f] = None if c is None else c.tolist()
-    make_figure(agg, runs, sources, unobs, args.fig)
+    truth_label = (f"frame {config.T1_4_FRAME_INDEX}" if args.mode == "F"
+                   else f"mode T frames {truth_info['first_frame']}-{truth_info['last_frame']}")
+    make_figure(agg, runs, sources, unobs, args.fig, truth_label=truth_label, likelihood_label=nb_label)
+    final_table: str | None = None
+    final_verd: dict | None = None
+    if baseline is not None:
+        final_table = table1_final_markdown(agg, baseline["aggregates"], sources, analytic_std, adjoint_std, library,
+                                            max_counts, unobs, offset_note=offset_annotation(offset_rep), nb_label=nb_label)
+        final_verd = final_verdicts(agg, baseline["aggregates"])
     res = {
         "created": time.strftime("%Y-%m-%d %H:%M:%S"), "frame_index": config.T1_4_FRAME_INDEX,
         "step": config.index_to_step(config.T1_4_FRAME_INDEX), "z": config.DRONE_Z,
+        "mode": args.mode, "frame_schedule_mode_t": truth_info, "truth_density_seconds": truth_seconds,
+        "mode_note": ("mode F: fixed snapshot frame_index (D6 truth)" if args.mode == "F" else
+                      "mode T: time-varying truth (frame_schedule_mode_t); errors are not directly comparable with mode F"),
         "sensor": {"k0": det.k0, "scale": config.T1_4_SENSOR_SCALE, "background_cps": det.background, "T": det.T,
                    "currie_threshold_cps": det.detection_threshold_cps()},
         "pf": {"n_particles": config.PF_N_PARTICLES, "kappa_ref": config.KAPPA_REF, "grid_decades": config.KAPPA_GRID_DECADES,
-               "n_grid": config.KAPPA_G, "map_method": "mode", "jitter_m": config.PF_JITTER_M},
+               "n_grid": config.KAPPA_G, "map_method": "mode", "jitter_m": config.PF_JITTER_M,
+               "likelihood": args.likelihood, "nb_r": args.nb_r},
         "filters": {f: {"model": FILTER_MODEL[f], "eps_mix": config.T1_4_FILTER_EPS[f], "label": FILTER_LABEL[f]} for f in filters},
         "analytic_params": {"wind_mode": "global", "U": config.T1_4_ANALYTIC_U, "sigma_v": config.T1_4_ANALYTIC_SIGMA_V,
                             "calibration_chosen": analytic_chosen, "matches_calibration": cal_match["analytic"]},
@@ -518,6 +782,10 @@ def main(argv: list[str] | None = None) -> dict:
         "calibration_std_dense": {"analytic": {str(s): v for s, v in analytic_std.items()},
                                   "adjoint": {str(s): v for s, v in adjoint_std.items()}},
         "aggregates": agg, "verdicts": verd, "pooled_open_error_curves": curves, "table1_markdown": table,
+        "baseline": None if baseline is None else {k: v for k, v in baseline.items() if k != "aggregates"},
+        "offset_report": {"source": config.T1_4_OFFSET_SOURCE, "path": str(args.timeavg_json), "report": offset_rep,
+                          "annotation": offset_annotation(offset_rep)},
+        "table1_final_markdown": final_table, "final_verdicts": final_verd,
         "snapshots": {str(s): str(args.snapshot_dir / f"t1_4_snapshots_{s}.npz") for s in config.T1_4_SNAPSHOT_SOURCES
                       if s in sources and config.T1_4_SNAPSHOT_FILTER in filters},
         "runs": {f: {str(s): [{k: v for k, v in r.items() if k != "map_error_trajectory_m"} for r in rr]
@@ -535,6 +803,19 @@ def main(argv: list[str] | None = None) -> dict:
     print(f"v source {config.T1_4_UNOBSERVABLE_SOURCE}: {verd['v_unobservable']['label']} (max count "
           f"{verd['v_unobservable']['max_expected_count']:.1f} vs threshold {verd['v_unobservable']['threshold_counts']:.1f} counts, "
           f"rule {verd['v_unobservable']['rule']})")
+    if final_table is not None and final_verd is not None:
+        print(f"FINAL Table 1 (baseline {baseline['likelihood']} {baseline['path']} vs {nb_label}):")
+        print(final_table)
+        for f, blk in final_verd["open"].items():
+            print(f"final {f}({nb_label}) open sources < {blk['pass_m']:.0f} m: {blk['n_pass']}/{blk['n_sources']} ->",
+                  "PASS" if blk["overall_pass"] else "FAIL")
+        reg = final_verd["regression"]
+        pooled_txt = (f"pooled {reg['pooled']['poisson_median_m']:.1f}->{reg['pooled']['nb_median_m']:.1f} m"
+                      if reg["pooled"] else "pooled n/a")
+        print("final B regression sources not regressed vs Poisson: "
+              + ", ".join(f"{s} {v['poisson_median_m']:.0f}->{v['nb_median_m']:.0f} m ({'ok' if v['not_regressed'] else 'REGRESSED'})"
+                          for s, v in reg["per_source"].items())
+              + f"; {pooled_txt} ->", "PASS" if reg["overall_pass"] else "FAIL")
     print(f"total {res['total_seconds']:.0f} s; JSON {args.out}; figure {args.fig}")
     return res
 

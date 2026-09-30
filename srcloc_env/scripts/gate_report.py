@@ -5,7 +5,12 @@ G0 (plan S0): T0-1 kernel reproduction, T0-2 cache, T0-3 slab vs exact gather, T
 T0-5 query latency, plus the wind / obstacle / alignment checks used by the environment.
 G1 (plan S1, 2026-09-30 보강 포함): library selection >= 95%, T1-2b kappa grid, T1-2 kappa bias criterion 2,
 T1-3/T1-3b shape comparison (adjoint better on all sources), T1-4 open-source error < 30 m (analytic AND adjoint),
-T1-5 GMM fidelity.
+T1-5 GMM fidelity.  The T1-4 items read validate_t1_4.json as it stands (D7-3: the negative-binomial re-run written by
+validate_t1_4 --likelihood negbin; the Poisson run is kept in validate_t1_4_poisson.json) and report the likelihood,
+the truth mode and the D7-3 final_verdicts (regression sources not regressed vs Poisson) next to the criterion.
+The T1-5 item reads validate_t1_5.json, which is computed from the t1_4_snapshots_{src}.npz written by the SAME
+validate_t1_4 run: it is marked stale (and fails) when its 'created' stamp is older than validate_t1_4.json's
+(D7-3 review: the Poisson-snapshot T1-5 must not be combined with the negative-binomial T1-4).
 """
 from __future__ import annotations
 
@@ -62,7 +67,7 @@ def g1() -> dict:
     lib_rate = ((lib or {}).get("blocks", {}).get("library", {}) or {}).get("selection_rate_overall")
     t12b = (kg or {}).get("t1_2b", {})
     kb_overall = (kb or {}).get("overall", {})
-    ca_per = ((ca or {}).get("verdicts", {}) or {}).get("per_source", {})
+    ca_per = (((ca or {}).get("comparison") or (ca or {}).get("verdicts") or {}).get("per_source", {}))   # calibrate_adjoint.json stores the analytic comparison under "comparison" (D7-3 fix: "verdicts" read 0/0 -> spurious FAIL)
     n_adj_better = sum(1 for v in ca_per.values() if v.get("adjoint_better_std_dense"))
     open_src = [str(s) for s in config.T1_3_OPEN_SOURCES] if hasattr(config, "T1_3_OPEN_SOURCES") else ["101", "108", "109", "111", "113"]
     v = (t14 or {}).get("verdicts", {})
@@ -70,20 +75,51 @@ def g1() -> dict:
     b_open = {s: v.get("ii_B_open", {}).get("per_source", {}).get(s, {}).get("final_error_median_m") for s in open_src}
     a_pass = bool(a_open and all(x is not None and x < config.T1_4_FINAL_ERROR_PASS_M for x in a_open.values()))
     b_pass = bool(b_open and all(x is not None and x < config.T1_4_FINAL_ERROR_PASS_M for x in b_open.values()))
+    pf14 = (t14 or {}).get("pf", {})
+    lik = pf14.get("likelihood", "poisson")
+    lik_label = f"negbin r={pf14.get('nb_r')}" if lik == "negbin" else lik
+    t14_info = {"likelihood": lik_label, "mode": (t14 or {}).get("mode", "F"), "created": (t14 or {}).get("created"),
+                "baseline": (t14 or {}).get("baseline")}
+    fv = (t14 or {}).get("final_verdicts") or {}
+    reg = fv.get("regression", {})
+    t14_regression = {"pass": reg.get("overall_pass"), "per_source": reg.get("per_source"), "pooled": reg.get("pooled"),
+                      "note": "informational (D7-3): B(NB) not regressed vs B(Poisson) on the trapped / roof-leak sources"}
+    t14_created, t15_created = (t14 or {}).get("created"), (t15 or {}).get("created")
+    t15_stale = bool(t14_created and t15_created and str(t15_created) < str(t14_created))   # '%Y-%m-%d %H:%M:%S' sorts as text
+    t15_pass = bool((t15 or {}).get("verdict", {}).get("overall_pass")) and not t15_stale
+    t15_sum = (t15 or {}).get("summaries", {}) or {}
+    t15_conv = {s: {"n_transitions_converged": v.get("n_transitions_converged"), "n_converged_snapshots": v.get("n_converged_snapshots"),
+                    "flip_rate_mean_all": v.get("flip_rate_mean"), "flip_criterion_vacuous": bool(not v.get("n_transitions_converged"))}
+                for s, v in t15_sum.items()}   # D7-3 review: the strict flip criterion counts converged-phase transitions only; 0 -> vacuous pass
     items = {
         "library filter selection >= 95% (T1-4 upper bound)": {"pass": bool(lib_rate is not None and lib_rate >= 0.95), "selection_rate": lib_rate},
         "T1-2b kappa grid margins >= 1 decade": {"pass": bool(t12b.get("pass")), "kappa_ref": t12b.get("kappa_ref"), "grid_decades": t12b.get("grid_decades")},
         "T1-2 fixed-wrong-kappa bias > RB-PF bias": {"pass": bool(kb_overall.get("pass_bias")), "map_diff_criterion": kb_overall.get("pass_map_diff")},
         "T1-3b adjoint shape residual < analytic (all sources)": {"pass": n_adj_better == len(ca_per) and len(ca_per) > 0, "n_better": n_adj_better, "n_sources": len(ca_per)},
-        "T1-4 analytic RB-PF open-source median error < 30 m": {"pass": a_pass, "per_source_m": a_open},
-        "T1-4 adjoint RB-PF open-source median error < 30 m": {"pass": b_pass, "per_source_m": b_open},
-        "T1-5 GMM fidelity (TV < 0.2, converged flips < 10%)": {"pass": bool((t15 or {}).get("verdict", {}).get("overall_pass")),
-                                                            "per_source": (t15 or {}).get("verdict", {}).get("per_source")},
+        "T1-4 analytic RB-PF open-source median error < 30 m": {"pass": a_pass, "per_source_m": a_open, **t14_info},
+        "T1-4 adjoint RB-PF open-source median error < 30 m": {"pass": b_pass, "per_source_m": b_open, **t14_info,
+                                                            "regression_vs_poisson": t14_regression},
+        "T1-5 GMM fidelity (TV < 0.2, converged flips < 10%)": {"pass": t15_pass,
+                                                            "per_source": (t15 or {}).get("verdict", {}).get("per_source"),
+                                                            "created": t15_created, "t1_4_created": t14_created,
+                                                            "stale_vs_t1_4": t15_stale, "converged_phase": t15_conv,
+                                                            "note": "snapshots must come from the validate_t1_4 run above (stale -> FAIL); "
+                                                                    "flip_criterion_vacuous = no converged-phase transition to count"},
     }
     ok = all(x["pass"] for x in items.values())
-    decision = ("S1 accepted; proceed to S2" if ok else
-                "FAIL on T1-4 (both forward models over-collapse on the frozen LDM snapshot). Plan S1 fallback + D7: "
-                "overdispersed (negative-binomial) likelihood in RBPF, calibrated dispersion; re-run T1-4 before S2.")
+    failing = [k for k, x in items.items() if not x["pass"]]
+    if ok:
+        decision = "S1 accepted; proceed to S2"
+    elif lik == "negbin":
+        decision = (f"FAIL after the D7-3 re-run with the {lik_label} likelihood (mode {t14_info['mode']}): "
+                    + "; ".join(failing) + ". The open-source criterion is not met by " 
+                    + ("both filters" if not a_pass and not b_pass else ("filter A" if not a_pass else "filter B"))
+                    + "; record the residual failures (source-109 systematic offset, per-source Table 1) and apply the "
+                      "plan S1 fallback for S2 (adjoint model + NB likelihood as the default, open-source criterion "
+                      "reported as a limitation).")
+    else:
+        decision = ("FAIL on T1-4 (both forward models over-collapse on the frozen LDM snapshot). Plan S1 fallback + D7: "
+                    "overdispersed (negative-binomial) likelihood in RBPF, calibrated dispersion; re-run T1-4 before S2.")
     return {"gate": "G1", "date": date.today().isoformat(), "items": items, "pass": ok, "decision": decision}
 
 

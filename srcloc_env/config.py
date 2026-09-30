@@ -424,3 +424,53 @@ T1_5_FIG_INSET_SIGMA_M = SUCCESS_SIGMA_M           # [plan 4.5]
 # ---- D6-1 review (2026-09-30): source-110 observability rule aligned with D5-2 / validation_log 결정 ('고정 고도 15 m의 관측 한계')
 T1_4_UNOBSERVABLE_USE_CURRIE = True                # G1 (v): also 'unobservable at 15 m' when the max expected count along the path is below the Currie decision threshold Detector.detection_threshold_cps() x T (33.4 counts; the rule of validate_pf_adjoint); the 1.5 x background rule alone (30) misses 110 (32.0 counts, belief entropy 7.1 -> 7.0 nats) [D6-1 review, validation_log 결정 2026-09-30]
 T1_5_TV_SUBCELLS = 5           # sub-cell quadrature points per axis for the GMM cell mass in total_variation_distance [D6-2b review]
+# --------------------------------------------------------------------------------------
+# RB-PF count likelihood  [plan 4.3 강건화, S1 T1-2 / T1-4, D7-1; R22 Yee & Chan 1997, R23 Hilbe 2011; pf/particle_filter.py;
+# tests/test_particle_filter_negbin.py; validate_kappa_bias / validate_t1_4 --likelihood/--nb-r]  -- appended D7-1
+# --------------------------------------------------------------------------------------
+PF_LIKELIHOOD = "poisson"          # default RBPF count likelihood (grid mode): 'poisson' y ~ Poisson(lam) (R3); kept until D7-3 decides, the scripts pass --likelihood explicitly [plan D7-1, 결정 2026-09-30]
+PF_NB_DISPERSION_R = 0.3           # negative-binomial (Gamma-Poisson) dispersion r of likelihood='negbin', Var = lam + lam^2 / r (R23): [진단 2026-09-30] dense-cell log-residual std of the frozen LDM snapshot ~1.2 -> CV ~1.8 -> r = 1 / CV^2 ~ 0.3 (validation_log 'G1 FAIL 원인과 치료'; R22 gamma-type concentration fluctuations) [측정 D6 진단]
+PF_LIKELIHOODS = ("poisson", "negbin")   # accepted RBPF(likelihood=...) values; 'negbin' is grid mode only, the 'nb' Gamma-kappa conjugate path is Poisson only [plan D7-1]
+# --------------------------------------------------------------------------------------
+# D7-2 Mode T measurement support + (NB dispersion r) x (mode F / T) comparison  [plan 1 시간 모드 (Mode T: 시작 인덱스
+# 100~350, 스텝당 1.6 파일 전진, zero-order hold), S1 T1-4, 4.3 강건화, D7-2; R22 / R23; scripts/validate_t1_4.py --mode,
+# scripts/validate_d7_modes.py, tests/test_validate_d7_modes.py]  -- appended D7-2
+# --------------------------------------------------------------------------------------
+T1_4_MODES = ("F", "T")                        # validate_t1_4.generate_measurements modes: 'F' = fixed snapshot T1_4_FRAME_INDEX (D6 behaviour); 'T' = time-varying frames f(t) = min(N_FILES - 1, round(T1_4_MODE_T_START_INDEX + FILES_PER_RL_STEP t)) for RL step t, both drones of a step share the frame (plan 1 Mode T zero-order hold) [plan D7-2]
+T1_4_MODE_T_START_INDEX = FRAME_START_MODE_T[0]   # 100: the comparison uses the lower end of the Mode T start range (deterministic truth; 150 steps -> frames 100..338, step 17525..23475) [plan D7-2]
+D7_2_OPEN_SOURCES = T1_3_OPEN_SOURCES          # (101, 108, 109, 111, 113): selection statistic of the D7-2 recommendation = median over these of the final MAP error median [plan D7-2]
+D7_2_REGRESSION_SOURCES = (102, 104, 106)      # sources filter B already solved with Poisson / Mode F (T1-4: 19 / 12 / 16 m): the regression constraint of the recommendation rule [plan D7-2]
+D7_2_N_SEEDS = 3                               # Poisson / PF seeds per (config, source) [plan D7-2 "시드 3"]
+D7_2_N_STEPS = PF_ADJ_N_STEPS                  # 150 RL steps x PF_ADJ_N_DRONES drones on the validate_pf_adjoint.two_drone_paths lawnmower [plan T1-4]
+D7_2_NB_R_GRID = (0.3, 1.0, 3.0)               # negbin dispersion candidates next to the Poisson baseline (r -> inf); 0.3 = PF_NB_DISPERSION_R [plan D7-2]
+D7_2_CHECKPOINT_STEPS = (50, 100, 150)         # MAP error recorded after these RL steps (final = 150) [plan D7-2]
+D7_2_REGRESSION_TOLERANCE = 1.5                # admissible config: median over D7_2_REGRESSION_SOURCES of the final error <= 1.5 x its Poisson-F value [plan D7-2]
+D7_2_N_TOP = 3                                 # configs listed in the recommendation ranking [plan D7-2]
+D7_2_FIG_REF_LINES_M = T1_4_FIG_REF_LINES_M    # 30 m open-source criterion / 20 m SUCCESS_ERROR_M reference lines of fig_d7_modes [plan G1, 4.5]
+D7_2_FIG_YLIM_M = T1_4_FIG_YLIM_M              # log y range of the error panels [plan D6-1]
+# --------------------------------------------------------------------------------------
+# T1-3c time-averaged calibration  [plan S1 T1-3 / T1-4 (G1 FAIL 대응, validation_log '결정·주의 사항' G1 FAIL 원인과 치료), 4.3;
+# R22 Yee & Chan 1997 (concentration-fluctuation pdf), R23 Hilbe 2011 (NB r = 1/CV^2); scripts/calibrate_timeavg.py,
+# tests/test_calibrate_timeavg.py; fig_timeavg_calibration.png]  -- appended D7-2b
+# --------------------------------------------------------------------------------------
+T1_3C_FRAME_RANGE = FRAME_RANGE_MODE_F           # (400, 599) inclusive: the Mode F snapshot range, 200 frames, z_levels[0] = DRONE_Z (docs/data_cache.md) [plan D7-2b]
+T1_3C_TIMEAVG_NPZ_TEMPLATE = "slab_timeavg_{lo}_{hi}.npz"   # CACHE_DIR / slab_timeavg_400_599.npz: mean / std / cv / cv_norm (13, ny, nx) float32 [plan D7-2b]
+T1_3C_DENSE_FRACTION = T1_3_INFO_DENSITY_FRACTION   # dense cells of the fluctuation statistic: mean >= 1 % of the source's max mean (same rule as T1-3 / T1-3b) [plan D7-2b]
+T1_3C_ADJ_K_CANDIDATES = (8.0, 16.0)              # neighbourhood of the chosen T1-3b combination (K 8 sat at the grid edge, validation_log 전방모델 결정) [plan D7-2b]
+T1_3C_ADJ_LAMBDA_CANDIDATES = (0.002, 0.005)      # [1/s] [plan D7-2b]
+T1_3C_ADJ_WIND_LAYERS: dict[str, tuple[float, float] | None] = {"single_15m": None}   # single 15 m wind only (the layer axis was uninformative in T1-3b) [plan D7-2b]
+T1_3C_OFFSET_SOURCES = (101, 109, 111)            # sources whose mean-field 15 m maximum offset from the source is reported ('109 systematic offset' hypothesis, ~90 m) [plan D7-2b]
+T1_3C_FIG_SOURCE = 109                            # figure panels (a)-(c): open holdout source 109 [plan D7-2b]
+T1_3C_POOLED_SOURCES = T1_3_OPEN_SOURCES          # pooled NB dispersion over the open sources {101, 108, 109, 111, 113} [plan D7-2b]
+# --------------------------------------------------------------------------------------
+# D7-3 T1-4 re-run with the D7-2 likelihood recommendation + final Table 1 / G1 re-judgement  [plan S1 T1-4 / G1,
+# 4.3 강건화, D7-3; R22 Yee & Chan 1997, R23 Hilbe 2011; scripts/validate_t1_4.py --baseline-json / --timeavg-json,
+# table1_final_markdown, final_verdicts; scripts/gate_report.py --gate G1; tests/test_validate_t1_4.py]  -- appended D7-3
+# --------------------------------------------------------------------------------------
+T1_4_POISSON_BASELINE_JSON = CACHE_DIR / "validate_t1_4_poisson.json"   # the D6 Poisson / Mode F run (validate_t1_4.json copied before the D7-3 re-run; fig_t1_4_errors_poisson.png) [plan D7-3]
+T1_4_TIMEAVG_JSON = CACHE_DIR / "calibrate_timeavg.json"               # T1-3c output whose 'offset_report' gives the 15 m slab peak offset of T1_4_OFFSET_SOURCE (calibrate_timeavg.py, D7-2b) [plan D7-3]
+T1_4_D7_3_LIKELIHOOD = "negbin"    # D7-3 re-run likelihood = the D7-2 recommendation (negative-binomial, R22 / R23); PF_LIKELIHOOD stays 'poisson' for the unit tests / old scripts [D7-2 결과, 결정 2026-09-30]
+T1_4_D7_3_NB_R_MODE_F = 1.0        # D7-2 recommendation for Mode F: negbin r = 1 (open-source median 44.7 m vs 48.9 m at r 0.3 and 139.1 m Poisson; regression median 21.2 m <= 1.5 x 18.7 m) [D7-2 결과]
+T1_4_D7_3_NB_R_MODE_T = 3.0        # D7-2 recommendation within Mode T: negbin r = 3 (open median 71.3 m > 44.7 m of Mode F -> Mode T is not re-run in D7-3) [D7-2 결과]
+T1_4_OFFSET_SOURCE = 109           # source annotated in the final Table 1 with its systematic 15 m offset (validation_log 'G1 FAIL 원인과 치료': 15 m slab maximum ~30 m (time mean) / ~80 m (frame 599) downwind of the source) [plan D7-3]
+T1_4_REGRESSION_SOURCES = D7_2_REGRESSION_SOURCES   # (102, 104, 106): final-table verdict 'not regressed vs Poisson' = B(NB) median final error <= max(D7_2_REGRESSION_TOLERANCE x B(Poisson) median, T1_4_FINAL_ERROR_PASS_M) per source and the D7-2 pooled rule [plan D7-3]

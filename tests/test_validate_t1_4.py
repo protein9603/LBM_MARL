@@ -6,8 +6,9 @@ import pytest
 
 from srcloc_env import config
 from srcloc_env.pf.particle_filter import RBPF
-from srcloc_env.scripts.validate_t1_4 import (aggregate, pooled_error_curve, run_filter, source_type, table1_markdown,
-                                               verdicts)
+from srcloc_env.scripts.validate_t1_4 import (aggregate, final_verdicts, load_baseline, load_offset_report, offset_annotation,
+                                               pooled_error_curve, run_filter, source_type, table1_final_markdown,
+                                               table1_markdown, verdicts)
 
 CHECKS = (25, 50, 100, 150)
 
@@ -91,6 +92,59 @@ def test_verdicts_and_table():
     assert lines[4].startswith("| 102 | trapped | n/a | n/a |")
     assert source_type(109) == "open(holdout)" and source_type(110) == "trapped" and source_type(103) == "holdout"
     assert source_type(101) == "open" and source_type(104) == "train"
+
+
+def test_final_table_and_final_verdicts(tmp_path):
+    """D7-3: FINAL Table 1 (Poisson baseline vs NB re-run side by side, 110 tagged, 109 annotated) and the per-source
+    G1 re-judgement (open sources < pass_m for A(NB) / B(NB), regression sources not regressed vs Poisson)."""
+    import json
+    agg_p = aggregate(synthetic_runs(), CHECKS)                       # baseline: A 109 median 20, B 109 8, B 102 15
+    runs_n = {"A": {109: [make_record(8.0, True, 30)] * 3, 110: [make_record(180.0, False, None)] * 2,
+                    102: [make_record(50.0, False, None)]},
+              "B": {109: [make_record(25.0, True, 40), make_record(29.0, True, 50), make_record(26.0, False, None)],
+                    110: [make_record(260.0, False, None)] * 2, 102: [make_record(40.0, False, None)]}}
+    agg_n = aggregate(runs_n, CHECKS)
+    # offset report round trip through a temporary calibrate_timeavg-like JSON
+    rep = {"mean_peak_distance_m": 30.37, "mean_peak_direction_deg": 10.05, "instantaneous_peak_distance_m": 80.8,
+           "instantaneous_peak_direction_deg": 22.0, "wind_dir_deg": 12.6}
+    f_off = tmp_path / "timeavg.json"
+    f_off.write_text(json.dumps({"offset_report": {"109": rep}}), encoding="utf-8")
+    assert load_offset_report(f_off, 109) == rep and load_offset_report(f_off, 101) is None
+    assert load_offset_report(tmp_path / "missing.json", 109) is None
+    note = offset_annotation(rep, frame_index=599)
+    assert note == "[systematic offset: 15 m slab peak 30 m (time mean) / 81 m (frame 599) from the source, 10-22 deg; wind 13 deg]"
+    assert "missing" in offset_annotation(None)
+    # baseline loader
+    f_base = tmp_path / "base.json"
+    f_base.write_text(json.dumps({"created": "t", "mode": "F", "pf": {"likelihood": "poisson", "nb_r": 0.3}, "n_seeds": 5,
+                                  "aggregates": agg_p}), encoding="utf-8")
+    base = load_baseline(f_base)
+    assert base["likelihood"] == "poisson" and base["mode"] == "F" and base["aggregates"]["B"]["109"]["final_error_median"] == 8.0
+    assert load_baseline(tmp_path / "none.json") is None
+    table = table1_final_markdown(agg_n, base["aggregates"], (109, 110, 102), {109: 1.50, 110: 2.84}, {109: 1.41, 110: 1.11},
+                                  {109: {"first_step_median": 13.0, "selection_rate": 1.0}}, {109: 546.0, 110: 32.0, 102: 543.0},
+                                  unobservable=(110,), offset_source=109, offset_note=note, nb_label="negbin r=1")
+    lines = table.splitlines()
+    assert len(lines) == 5 and lines[0].count("|") == 12 and lines[1] == "|" + "---|" * 11
+    assert "A(negbin r=1) final err" in lines[0] and "B(negbin r=1) success" in lines[0]
+    assert lines[2].startswith("| 109 | open(holdout) [systematic offset: 15 m slab peak 30 m")
+    assert "| 1.50 | 1.41 | 20 / 80 | 8 / 8 | 8 / 8 | 26 / 28 | 67% | 13 (100%) | 546 |" in lines[2]
+    assert "| 110 | trapped [unobservable at 15 m] |" in lines[3] and "| 200 / 200 | 180 / 180 | 250 / 250 | 260 / 260 | 0% | n/a (n/a%) | 32 |" in lines[3]
+    assert lines[4].startswith("| 102 | trapped | n/a | n/a | 38 / 56 | 50 / 50 | 15 / 17 | 40 / 40 | 0% |")
+    # verdicts: open 109 passes for A (8 < 30) and B (26 < 30); 102 regressed (40 > max(1.5 x 15, 30) = 30)
+    v = final_verdicts(agg_n, base["aggregates"], open_sources=(109,), regression_sources=(102, 110), pass_m=30.0, tolerance=1.5)
+    assert v["open"]["A"]["per_source"]["109"] == {"nb_median_m": 8.0, "poisson_median_m": 20.0, "pass": True, "improved": True}
+    assert v["open"]["B"]["per_source"]["109"]["pass"] is True and v["open"]["B"]["per_source"]["109"]["improved"] is False
+    assert v["open"]["A"]["overall_pass"] and v["open"]["B"]["overall_pass"] and v["open"]["B"]["n_pass"] == 1
+    r102 = v["regression"]["per_source"]["102"]
+    assert r102["limit_m"] == 30.0 and r102["not_regressed"] is False and r102["ratio"] == pytest.approx(40.0 / 15.0)
+    assert v["regression"]["per_source"]["110"]["not_regressed"] is True           # 260 <= max(1.5 x 250, 30) = 375
+    assert v["regression"]["overall_pass"] is False and v["overall_pass"] is False
+    v2 = final_verdicts(agg_n, base["aggregates"], open_sources=(109,), regression_sources=(110,), pass_m=30.0, tolerance=1.5)
+    assert v2["regression"]["per_source"]["110"]["not_regressed"] is True and v2["regression"]["pooled"]["pass"] is True
+    assert v2["regression"]["overall_pass"] and v2["overall_pass"]
+    v3 = final_verdicts(agg_n, base["aggregates"], open_sources=(109, 102), regression_sources=(), pass_m=30.0)
+    assert v3["open"]["A"]["overall_pass"] is False and v3["regression"]["pooled"] is None and v3["overall_pass"] is False
 
 
 class _StubForward:
