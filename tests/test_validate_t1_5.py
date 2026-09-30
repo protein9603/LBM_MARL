@@ -42,8 +42,9 @@ def test_integrated_tv_removes_centre_point_bias_for_a_narrow_cloud():
     assert st["tv_noise_floor"] is None
     assert st["tv"] == pytest.approx(total_variation_distance(xy.astype(float), w, gmm))
     assert st["tv_integrated"] == pytest.approx(tv_distance_integrated(xy, w, gmm))
-    assert st["tv_integrated"] < 0.05 < st["tv"]
-    assert tv_distance_integrated(xy, w, gmm, n_sub=1) == pytest.approx(st["tv"], abs=1e-9)   # n_sub 1 == centre rule
+    centre_rule = total_variation_distance(xy.astype(float), w, gmm, subcells=1)
+    assert st["tv_integrated"] < 0.05 < centre_rule                     # centre-point rule over-estimates the TV
+    assert tv_distance_integrated(xy, w, gmm, n_sub=1) == pytest.approx(centre_rule, abs=1e-9)   # n_sub 1 == centre rule
     s = sample_gmm(gmm, 500, rng)
     assert s.shape == (500, 2) and np.linalg.norm(s.mean(0) - [600.0, 50.0]) < 1.5
     assert 0.0 < tv_noise_floor(gmm, 4000) < 0.5
@@ -96,7 +97,7 @@ def test_analyse_summarise_verdict_and_nearest():
     assert sm["n_valid_min"] >= 1 and sm["flip_rate_mean"] >= 0.0 and len(sm["n_valid_by_step"]) == 7
     assert 0.0 <= sm["tv_integrated_median"] <= 1.0 and sm["tv_noise_floor_median"] > 0.0   # integrated <= centre only for narrow clouds
     v = verdict({"109": sm, "102": {**sm, "tv_median": 0.5, "tv_integrated_median": 0.5}})
-    assert v["per_source"]["109"]["pass"] == (sm["tv_median"] < config.T1_5_TV_MAX and sm["flip_rate_mean"] < config.T1_5_FLIP_MAX)
+    assert v["per_source"]["109"]["pass"] == (sm["tv_median"] < config.T1_5_TV_MAX and sm["flip_rate_mean_converged"] < config.T1_5_FLIP_MAX)
     assert v["per_source"]["102"]["pass"] is False and v["overall_pass"] is False and v["n_sources"] == 2
     assert v["informational"]["per_source"]["102"]["pass"] is False and v["informational"]["tv_key"] == "tv_integrated_median"
     assert nearest_snapshot_indices([0, 5, 10, 15, 20, 25, 30], (10, 12, 13, 60)) == [2, 2, 3, 6]

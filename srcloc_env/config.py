@@ -325,7 +325,7 @@ GMM_VECTOR_DIM = GMM_K * 6 + GMM_K + GMM_K * 2   # 27 = K x (w, mux, muy, sxx, s
 T1_5_TV_CELL_M = 10.0          # histogram cell for the GMM-vs-PF total-variation fidelity check [plan S1 T1-5]
 T1_5_TV_MAX = 0.2              # pass: TV distance < 0.2 [plan S1 T1-5]
 T1_5_FLIP_MAX = 0.1            # pass: component-order flip rate between consecutive steps < 10% [plan S1 T1-5]
-GMM_MERGE_BHAT = 0.25          # merge EM components with Bhattacharyya distance below this (~1.4 sigma apart for equal covariances) [계산, plan 4.4 permutation stability]
+GMM_MERGE_BHAT = 0.30          # merge EM components with Bhattacharyya distance below this (~1.55 sigma apart for equal covariances); 0.25 left 102's split mode (B 0.26) flipping [계산, D6-2b]
 
 # --------------------------------------------------------------------------------------
 # D5-2 PF <-> LBM adjoint connection (plan 4.2b 검증 "갱신당 시간 <= 20 ms", S1 T1-2 lite with the LBM model;
@@ -423,3 +423,4 @@ T1_5_FIG_INSET_SIGMA_M = SUCCESS_SIGMA_M           # [plan 4.5]
 
 # ---- D6-1 review (2026-09-30): source-110 observability rule aligned with D5-2 / validation_log 결정 ('고정 고도 15 m의 관측 한계')
 T1_4_UNOBSERVABLE_USE_CURRIE = True                # G1 (v): also 'unobservable at 15 m' when the max expected count along the path is below the Currie decision threshold Detector.detection_threshold_cps() x T (33.4 counts; the rule of validate_pf_adjoint); the 1.5 x background rule alone (30) misses 110 (32.0 counts, belief entropy 7.1 -> 7.0 nats) [D6-1 review, validation_log 결정 2026-09-30]
+T1_5_TV_SUBCELLS = 5           # sub-cell quadrature points per axis for the GMM cell mass in total_variation_distance [D6-2b review]

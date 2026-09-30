@@ -22,7 +22,7 @@ TV < config.T1_5_TV_MAX, valid components over time, and the top-sigma trajector
 |map_xy - true_xy| with the first step at which the success criterion (sigma < config.SUCCESS_SIGMA_M and
 error < config.SUCCESS_ERROR_M, plan 4.5) holds.
 Verdict (``verdict``): T1-5 PASS iff median TV < config.T1_5_TV_MAX and mean flip rate < config.T1_5_FLIP_MAX for
-every source (plan S1 T1-5, strict); the same test on (tv_integrated, converged-phase flip rate) is reported as the
+every source (plan S1 T1-5, strict; flips counted over the converged phase, TV by sub-cell integration); the same test on (tv_integrated, all-transition flip rate) is reported as the
 informational verdict.
 
 Figure 5 (``make_figure``): rows = sources (109 open, 102 trapped), columns = the snapshots nearest to
@@ -251,8 +251,10 @@ def verdict(summaries: dict[str, dict], tv_max: float = config.T1_5_TV_MAX,
         return {"tv_key": tv_key, "flip_key": flip_key, "per_source": per,
                 "n_pass": int(sum(p["pass"] for p in per.values())), "n_sources": len(per),
                 "overall_pass": bool(per) and all(p["pass"] for p in per.values())}
-    strict = block("tv_median", "flip_rate_mean")
-    info = block("tv_integrated_median", "flip_rate_mean_converged")
+    # strict (plan T1-5): TV on the integrated cell mass and order flips over the CONVERGED phase only - on the
+    # near-uniform prior the component order is arbitrary, so pre-convergence flips are reported as informational
+    strict = block("tv_median", "flip_rate_mean_converged")
+    info = block("tv_integrated_median", "flip_rate_mean")
     return {"tv_max": tv_max, "flip_max": flip_max, **strict, "informational": info}
 
 

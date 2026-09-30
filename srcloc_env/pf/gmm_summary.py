@@ -177,7 +177,8 @@ def summarise_pf(pf, k: int = config.GMM_K, rng: np.random.Generator | None = No
 
 
 def total_variation_distance(xy: np.ndarray, w: np.ndarray, gmm: GmmSummary, cell: float = config.T1_5_TV_CELL_M,
-                             bounds: tuple[tuple[float, float], tuple[float, float]] | None = None) -> float:
+                             bounds: tuple[tuple[float, float], tuple[float, float]] | None = None,
+                             subcells: int = config.T1_5_TV_SUBCELLS) -> float:
     """TV distance between the weighted particle histogram and the GMM mass on `cell`-sized cells (T1-5)."""
     xy = np.asarray(xy, dtype=float)
     w = np.asarray(w, dtype=float)
@@ -190,9 +191,15 @@ def total_variation_distance(xy: np.ndarray, w: np.ndarray, gmm: GmmSummary, cel
     ix = np.clip(((xy[:, 0] - x0) / cell).astype(int), 0, nx - 1)
     iy = np.clip(((xy[:, 1] - y0) / cell).astype(int), 0, ny - 1)
     hist = np.zeros((nx, ny)); np.add.at(hist, (ix, iy), w)
-    cx = x0 + cell * (np.arange(nx) + 0.5); cy = y0 + cell * (np.arange(ny) + 0.5)
-    gx, gy = np.meshgrid(cx, cy, indexing="ij")
-    dens = gmm.density(np.column_stack([gx.ravel(), gy.ravel()])).reshape(nx, ny) * cell * cell
+    # GMM mass per cell by sub-cell quadrature (the centre-point rule over-estimates TV once the belief sd is
+    # smaller than the cell; reviewer finding D6-2b): average the density on an s x s sub-grid inside each cell
+    s = max(int(subcells), 1)
+    off = (np.arange(s) + 0.5) / s * cell
+    cx = x0 + cell * np.arange(nx)[:, None] + off[None, :]          # (nx, s)
+    cy = y0 + cell * np.arange(ny)[:, None] + off[None, :]          # (ny, s)
+    gx, gy = np.meshgrid(cx.ravel(), cy.ravel(), indexing="ij")     # (nx*s, ny*s)
+    d = gmm.density(np.column_stack([gx.ravel(), gy.ravel()])).reshape(nx, s, ny, s)
+    dens = d.mean(axis=(1, 3)) * cell * cell
     dens = dens / max(dens.sum(), 1e-300)
     return float(0.5 * np.abs(hist - dens).sum())
 
