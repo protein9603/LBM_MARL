@@ -276,7 +276,7 @@ ADJ_LAMBDA_CANDIDATES = (0.005, 0.01, 0.02, 0.05, 0.1)   # T1-3b calibration gri
 ADJ_SOLVE_TIME_TARGET_S = 0.02     # one adjoint solve (receptor -> psi field) must fit the 20 ms environment-step budget [plan 4.2b]
 ADJ_FOOTPRINT_TRUNC_SIGMA = 3.0    # source footprint = Gaussian(RELEASE_SIGMA_XY) on the box of +-ceil(3 sigma0 / res) cells, renormalised to 1 over free cells [추정]
 ADJ_CACHE_ROUND_M = 0.5            # receptor position rounding of the psi LRU key [m] (plan 4.2b: cell index + bilinear offsets to 0.5 m) [plan 4.2b]
-ADJ_MAX_CACHED = 256               # psi fields held by the LbmAdjointModel LRU (207 x 200 float64 = 0.33 MB each -> 85 MB) [계산]
+ADJ_MAX_CACHED = 512               # psi fields held by the LbmAdjointModel LRU (207 x 200 float64 = 0.33 MB each -> 85 MB) [계산]  # raised 256 -> 512 (2026-09-30): a 2-drone 150-step episode touches ~300 receptors; ~170 MB
 ADJ_FACTORIZE_TIME_TARGET_S = 10.0 # criterion on assembly + LU factorisation of the real-size grid (200 x 207, ~20 % blocked) [plan D4-4]
 ADJ_TEST_SOLVE_TIME_LOOSE_S = 0.1  # unit-test (CI) bound on the adjoint solve median; the 20 ms target itself is checked by validate_adjoint [plan D4-4]
 ADJ_VALIDATE_N_RECEPTORS = 50      # validate_adjoint: random free receptors timed (median / p99) [plan D4-4]
