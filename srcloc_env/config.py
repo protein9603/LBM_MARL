@@ -519,3 +519,14 @@ ENV_CHECK_RANDOM_STEPS = 10_000          # validate_env.py T2-1: random-policy s
 ENV_STEP_TIME_TARGET_S = 0.02            # T2-3 target: >= 50 steps/s/core (20 ms per step incl. PF NB update + GMM) [plan T2-3, 추정 목표]
 ENV_TEAMMATE_DIM = 3                     # per-teammate observation block of MultiDroneEnv: relative position (dx, dy) / ENV_REL_NORM_M + teammate's latest normalised log count -> 2 drones 59, 3 drones 62 [plan 4.5]
 ENV_START_MIN_SEPARATION_M = 10.0        # minimum distance between drone starts of one episode (2 x DRONE_STEP_M; not in the plan, avoids coincident starts) [추정, D9-1]
+
+# --------------------------------------------------------------------------------------
+# Baselines and evaluation  [plan 4.7 베이스라인, 5장 실험 매트릭스·지표, S4; baselines/policies.py, eval/episodes.py, eval/metrics.py, eval/run_eval.py]  -- appended D9-2
+# --------------------------------------------------------------------------------------
+EVAL_BASE_SEED = 20261001                 # base seed of the common evaluation episode list (episode seed = base + 1000 k); disjoint from the training seeds (small integers) [결정 D9-2]
+EVAL_EPISODES_PER_SOURCE = 30             # final Table 2: episodes per source (plan 5장) [plan 5]
+EVAL_PRELIM_EPISODES_PER_SOURCE = 10      # T2-4 preliminary batch (plan S2 T2-4: 13 sources x 10 episodes x 1 / 2 drones) [plan T2-4]
+EVAL_N_BOOTSTRAP = 1000                   # bootstrap resamples of the success-step median CI (plan 5장 지표) [plan 5]
+EVAL_PROCESSES = 3                        # evaluation worker processes (4 cores, one left for the main process; plan S4 에피소드 단위 분배) [plan S4]
+INFOTAXIS_N_SUB = 500                     # GMM-Infotaxis: weighted bootstrap subsample of the PF particles scored per action (plan 4.7) [plan 4.7]
+INFOTAXIS_N_SAMPLES = 10                  # GMM-Infotaxis: predictive count samples per candidate position (plan 4.7); fallback 5 if the step time exceeds the budget (plan R7) [plan 4.7]
