@@ -115,44 +115,65 @@ def _merge_overlapping(pis: np.ndarray, means: np.ndarray, covs: np.ndarray, thr
 
 
 def fit_weighted_gmm(xy: np.ndarray, w: np.ndarray, k: int = config.GMM_K, n_iter: int = config.GMM_EM_ITERS,
-                     rng: np.random.Generator | None = None) -> GmmSummary:
+                     rng: np.random.Generator | None = None, init: "GmmSummary | None" = None) -> GmmSummary:
     """Weighted EM for a K-component 2-D Gaussian mixture on weighted particles (weights sum to 1).
 
     Responsibilities are multiplied by the particle weights, so the fit represents the weighted belief.
     Covariances get a diagonal floor GMM_COV_REG_M2. Components are sorted by weight (descending);
     components lighter than GMM_MIN_WEIGHT are zeroed and masked out.
+
+    ``init`` (D8-4, warm start): start EM from the valid components of a previous GmmSummary instead of weighted
+    k-means++ (masked slots are re-seeded at weighted random particles with a wide covariance); the environment
+    refreshes the summary every step from the previous one with config.ENV_GMM_EM_ITERS iterations.
+    The E / M steps use the closed-form 2 x 2 inverse / determinant vectorised over the K components (same
+    arithmetic as the per-component einsum loop up to round-off; T2-3 timing).
     """
     rng = np.random.default_rng(0) if rng is None else rng
     xy = np.asarray(xy, dtype=float)
     w = np.asarray(w, dtype=float)
     w = w / w.sum()
     n = xy.shape[0]
-    means = _weighted_kmeanspp(xy, w, k, rng)
-    covs = np.stack([np.eye(2) * max(np.var(xy, axis=0).mean(), config.GMM_COV_REG_M2)] * k)
-    pis = np.full(k, 1.0 / k)
-    reg = np.eye(2) * config.GMM_COV_REG_M2
+    wide = np.eye(2) * max(np.var(xy, axis=0).mean(), config.GMM_COV_REG_M2)
+    if init is not None and init.k == k and init.mask.any():
+        means = np.array(init.means, dtype=float)
+        covs = np.array(init.covs, dtype=float)
+        pis = np.array(init.weights, dtype=float)
+        for j in np.flatnonzero(~init.mask):        # re-seed masked slots
+            means[j] = xy[rng.choice(n, p=w)]
+            covs[j] = wide
+            pis[j] = config.GMM_MIN_WEIGHT
+        pis = pis / pis.sum()
+    else:
+        means = _weighted_kmeanspp(xy, w, k, rng)
+        covs = np.stack([wide] * k)
+        pis = np.full(k, 1.0 / k)
+    reg = config.GMM_COV_REG_M2
     for _ in range(n_iter):
-        # E-step: log responsibilities
-        logr = np.empty((n, k))
-        for j in range(k):
-            inv = np.linalg.inv(covs[j])
-            d = xy - means[j]
-            q = np.einsum("ni,ij,nj->n", d, inv, d)
-            logr[:, j] = np.log(pis[j] + 1e-300) - 0.5 * q - 0.5 * np.log(np.linalg.det(covs[j]))
+        # E-step: log responsibilities with the closed-form 2 x 2 inverse, vectorised over components
+        a, b, c = covs[:, 0, 0], covs[:, 0, 1], covs[:, 1, 1]
+        det = a * c - b * b
+        dx = xy[:, None, 0] - means[None, :, 0]        # (n, k)
+        dy = xy[:, None, 1] - means[None, :, 1]
+        q = (c * dx * dx - 2.0 * b * dx * dy + a * dy * dy) / det
+        logr = np.log(pis + 1e-300)[None, :] - 0.5 * q - 0.5 * np.log(det)[None, :]
         logr -= logr.max(axis=1, keepdims=True)
         r = np.exp(logr)
         r /= r.sum(axis=1, keepdims=True)
         rw = r * w[:, None]                         # weighted responsibilities
         nk = rw.sum(axis=0)                         # component masses (sum = 1)
-        # M-step
-        for j in range(k):
-            if nk[j] <= 1e-12:
-                means[j] = xy[rng.choice(n, p=w)]
-                covs[j] = np.eye(2) * config.GMM_COV_REG_M2 * 100.0
-                continue
-            means[j] = (rw[:, j] @ xy) / nk[j]
-            d = xy - means[j]
-            covs[j] = (rw[:, j, None] * d).T @ d / nk[j] + reg
+        # M-step (vectorised; empty components are re-seeded)
+        alive = nk > 1e-12
+        nk_safe = np.where(alive, nk, 1.0)
+        means = np.where(alive[:, None], (rw.T @ xy) / nk_safe[:, None], means)
+        dx = xy[:, None, 0] - means[None, :, 0]
+        dy = xy[:, None, 1] - means[None, :, 1]
+        sxx = (rw * dx * dx).sum(axis=0) / nk_safe + reg
+        syy = (rw * dy * dy).sum(axis=0) / nk_safe + reg
+        sxy = (rw * dx * dy).sum(axis=0) / nk_safe
+        covs = np.stack([np.stack([sxx, sxy], axis=1), np.stack([sxy, syy], axis=1)], axis=1)   # (k, 2, 2)
+        for j in np.flatnonzero(~alive):
+            means[j] = xy[rng.choice(n, p=w)]
+            covs[j] = np.eye(2) * config.GMM_COV_REG_M2 * 100.0
         pis = np.maximum(nk, 1e-12)
         pis /= pis.sum()
     pis, means, covs = _merge_overlapping(pis, means, covs, config.GMM_MERGE_BHAT)
@@ -170,10 +191,12 @@ def fit_weighted_gmm(xy: np.ndarray, w: np.ndarray, k: int = config.GMM_K, n_ite
     return GmmSummary(weights=pis, means=means, covs=covs, mask=mask)
 
 
-def summarise_pf(pf, k: int = config.GMM_K, rng: np.random.Generator | None = None) -> GmmSummary:
-    """Fit the GMM to an RBPF's current particles (uses pf.xy and normalised exp(pf.logw))."""
+def summarise_pf(pf, k: int = config.GMM_K, rng: np.random.Generator | None = None, init: GmmSummary | None = None,
+                 n_iter: int = config.GMM_EM_ITERS) -> GmmSummary:
+    """Fit the GMM to an RBPF's current particles (uses pf.xy and normalised exp(pf.logw)); ``init`` / ``n_iter``
+    = warm start from the previous summary with fewer iterations (environment refresh, D8-4)."""
     w = np.exp(pf.logw - np.max(pf.logw))
-    return fit_weighted_gmm(pf.xy, w / w.sum(), k=k, rng=rng)
+    return fit_weighted_gmm(pf.xy, w / w.sum(), k=k, n_iter=n_iter, rng=rng, init=init)
 
 
 def total_variation_distance(xy: np.ndarray, w: np.ndarray, gmm: GmmSummary, cell: float = config.T1_5_TV_CELL_M,
