@@ -4,6 +4,7 @@ vs Mode T (time-varying frames).
 
 Usage: python -m srcloc_env.scripts.validate_d7_modes [--seed 0] [--n-seeds 3] [--n-steps 150] [--sources 101 ...]
                                                       [--modes F T] [--nb-r 0.3 1 3] [--out ...] [--fig ...]
+       (D8-2: --modes F T2 --nb-r 1 3 --out validate_d8_2_modes.json --fig fig_d8_2_modes.png; T2 = developed plume, frames 400 + t)
 Writes config.CACHE_DIR / validate_d7_modes.json and config.FIG_DIR / fig_d7_modes.png (config.FIG_DPI_FINAL) +
 _preview.png (config.FIG_DPI_PREVIEW).
 
@@ -52,7 +53,7 @@ from srcloc_env.field.wind import WindField
 from srcloc_env.pf.lbm_adjoint import AdjointParams, AdvectionDiffusionOperator, LbmAdjointModel
 from srcloc_env.pf.particle_filter import RBPF
 from srcloc_env.scripts.validate_pf_adjoint import two_drone_paths
-from srcloc_env.scripts.validate_t1_4 import (aggregate, frame_schedule_mode_t, generate_measurements,
+from srcloc_env.scripts.validate_t1_4 import (aggregate, frame_schedule_mode_t, generate_measurements, mode_schedule,
                                                mode_t_densities, run_filter, source_type, truth_densities)
 from srcloc_env.sensor.detector import Detector
 
@@ -274,19 +275,20 @@ def main(argv: list[str] | None = None) -> dict:
     truth_seconds: dict[str, float] = {}
     for mode in modes:
         t0 = time.perf_counter()
-        if mode == "T":
-            densities[mode] = mode_t_densities(backend, paths_by_source)
+        if mode != "F":
+            densities[mode] = mode_t_densities(backend, paths_by_source, start=mode_schedule(mode)[0], files_per_step=mode_schedule(mode)[1])
         else:
             densities[mode] = {s: truth_densities(backend, s, paths_by_source[s], "F") for s in sources}
         truth_seconds[mode] = time.perf_counter() - t0
-    schedule = frame_schedule_mode_t(args.n_steps)
-    truth_info = {"F": {"frame_index": config.T1_4_FRAME_INDEX, "step": config.index_to_step(config.T1_4_FRAME_INDEX)},
-                  "T": {"start": config.T1_4_MODE_T_START_INDEX, "files_per_step": config.FILES_PER_RL_STEP,
-                        "first_frame": int(schedule[0]), "last_frame": int(schedule[-1]),
-                        "n_unique_frames": int(np.unique(schedule).size), "frames": schedule.tolist()}}
+    truth_info = {"F": {"frame_index": config.T1_4_FRAME_INDEX, "step": config.index_to_step(config.T1_4_FRAME_INDEX)}}
+    for m in config.T1_4_MODE_SCHEDULES:                       # "T" (young plume) and "T2" (developed plume, D8-2)
+        st, fps = mode_schedule(m)
+        schedule = frame_schedule_mode_t(args.n_steps, st, fps)
+        truth_info[m] = {"start": st, "files_per_step": fps, "first_frame": int(schedule[0]), "last_frame": int(schedule[-1]),
+                         "n_unique_frames": int(np.unique(schedule).size), "frames": schedule.tolist()}
     max_counts = {m: {str(s): float(det.expected_counts(densities[m][s], config.T1_4_SENSOR_SCALE).max()) for s in sources} for m in modes}
     print("[truth] densities: " + ", ".join(f"mode {m} {truth_seconds[m]:.0f} s" for m in modes) +
-          (f"; mode T frames {truth_info['T']['first_frame']}..{truth_info['T']['last_frame']}" if "T" in modes else ""), flush=True)
+          "".join(f"; mode {m} frames {truth_info[m]['first_frame']}..{truth_info[m]['last_frame']}" for m in modes if m != "F"), flush=True)
 
     runs: dict[str, dict[int, list[dict]]] = {k: {s: [] for s in sources} for k in keys}
     meas: dict[str, dict] = {}
@@ -322,7 +324,8 @@ def main(argv: list[str] | None = None) -> dict:
                              candidates=[config_key(st["label"], m) for st in settings])
                 for m in modes} if baseline_key in table else {}
     truth_labels = {"F": f"fixed frame {config.T1_4_FRAME_INDEX} (step {truth_info['F']['step']})",
-                    "T": f"time-varying frames {truth_info['T']['first_frame']}-{truth_info['T']['last_frame']} ({config.FILES_PER_RL_STEP:g} files / step)"}
+                    **{m: f"time-varying frames {truth_info[m]['first_frame']}-{truth_info[m]['last_frame']} ({truth_info[m]['files_per_step']:g} files / step)"
+                       for m in config.T1_4_MODE_SCHEDULES}}
     make_figure(agg, sources, settings, modes, args.fig, regression_sources, truth_labels,
                 {m: (rec_mode[m]["recommended"] if m in rec_mode else None) for m in modes})
     md_all = table_markdown(table, sources, keys, per)

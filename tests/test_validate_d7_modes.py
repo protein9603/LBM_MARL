@@ -191,3 +191,22 @@ def test_tables_from_aggregates():
     assert table_markdown(table, (101,), ["poisson_F", "missing"]).splitlines()[2] == "| 101 | open | 140 | n/a |"
     r = recommend(table, (101,), (102,))
     assert r["recommended"] == "negbin_r0.3_F" and r["per_config"]["negbin_r0.3_F"]["regression_ratio_to_baseline"] == pytest.approx(20 / 19)
+
+
+def test_mode_t2_schedule_developed_plume():
+    """D8-2: Mode T2 = frames 400 + t (1 cached frame per RL step) over the Mode F range, zero-order hold at 599."""
+    from srcloc_env.scripts.validate_t1_4 import mode_schedule
+    start, fps = mode_schedule("T2")
+    assert (start, fps) == (config.FRAME_RANGE_MODE_F[0], 1.0) == (400, 1.0)
+    sched = frame_schedule_mode_t(config.D7_2_N_STEPS, start, fps)
+    assert sched[0] == 400 and sched[-1] == 549 and np.all(np.diff(sched) == 1)      # 150 steps -> 150 distinct frames
+    assert frame_schedule_mode_t(300, start, fps)[-1] == config.N_FILES - 1 == 599  # longer episodes hold the last frame
+    assert mode_schedule("T") == (config.T1_4_MODE_T_START_INDEX, config.FILES_PER_RL_STEP)
+    assert config.FRAME_START_MODE_T2 == (400, 450)
+    with pytest.raises(ValueError):
+        mode_schedule("F")
+    be = _StubBackend()
+    paths = np.zeros((4, 2, 2))
+    d_t2 = mode_t_densities(be, {109: paths}, start=start, files_per_step=fps)[109]
+    assert d_t2.shape == (4, 2)
+    assert np.allclose(d_t2, truth_densities(be, 109, paths, "T2"))

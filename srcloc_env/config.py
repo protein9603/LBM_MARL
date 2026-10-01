@@ -439,7 +439,7 @@ PF_LIKELIHOODS = ("poisson", "negbin")   # accepted RBPF(likelihood=...) values;
 # 100~350, 스텝당 1.6 파일 전진, zero-order hold), S1 T1-4, 4.3 강건화, D7-2; R22 / R23; scripts/validate_t1_4.py --mode,
 # scripts/validate_d7_modes.py, tests/test_validate_d7_modes.py]  -- appended D7-2
 # --------------------------------------------------------------------------------------
-T1_4_MODES = ("F", "T")                        # validate_t1_4.generate_measurements modes: 'F' = fixed snapshot T1_4_FRAME_INDEX (D6 behaviour); 'T' = time-varying frames f(t) = min(N_FILES - 1, round(T1_4_MODE_T_START_INDEX + FILES_PER_RL_STEP t)) for RL step t, both drones of a step share the frame (plan 1 Mode T zero-order hold) [plan D7-2]
+T1_4_MODES = ("F", "T", "T2")                  # D8-2: "T2" = developed-plume time-varying mode (T1_4_MODE_SCHEDULES, appended below). validate_t1_4.generate_measurements modes: 'F' = fixed snapshot T1_4_FRAME_INDEX (D6 behaviour); 'T' = time-varying frames f(t) = min(N_FILES - 1, round(T1_4_MODE_T_START_INDEX + FILES_PER_RL_STEP t)) for RL step t, both drones of a step share the frame (plan 1 Mode T zero-order hold) [plan D7-2]
 T1_4_MODE_T_START_INDEX = FRAME_START_MODE_T[0]   # 100: the comparison uses the lower end of the Mode T start range (deterministic truth; 150 steps -> frames 100..338, step 17525..23475) [plan D7-2]
 D7_2_OPEN_SOURCES = T1_3_OPEN_SOURCES          # (101, 108, 109, 111, 113): selection statistic of the D7-2 recommendation = median over these of the final MAP error median [plan D7-2]
 D7_2_REGRESSION_SOURCES = (102, 104, 106)      # sources filter B already solved with Poisson / Mode F (T1-4: 19 / 12 / 16 m): the regression constraint of the recommendation rule [plan D7-2]
@@ -477,3 +477,15 @@ T1_4_D7_3_NB_R_MODE_F = 1.0        # D7-2 recommendation for Mode F: negbin r = 
 T1_4_D7_3_NB_R_MODE_T = 3.0        # D7-2 recommendation within Mode T: negbin r = 3 (open median 71.3 m > 44.7 m of Mode F -> Mode T is not re-run in D7-3) [D7-2 결과]
 T1_4_OFFSET_SOURCE = 109           # source annotated in the final Table 1 with its systematic 15 m offset (validation_log 'G1 FAIL 원인과 치료': 15 m slab maximum ~30 m (time mean) / ~80 m (frame 599) downwind of the source) [plan D7-3]
 T1_4_REGRESSION_SOURCES = D7_2_REGRESSION_SOURCES   # (102, 104, 106): final-table verdict 'not regressed vs Poisson' = B(NB) median final error <= max(D7_2_REGRESSION_TOLERANCE x B(Poisson) median, T1_4_FINAL_ERROR_PASS_M) per source and the D7-2 pooled rule [plan D7-3]
+
+# --------------------------------------------------------------------------------------
+# D8-2 Mode T2: time-varying truth on the DEVELOPED plume (frames >= 400)  [plan D8-2, validation_log D7-4 결정 (6); scripts/validate_t1_4, validate_d7_modes]  -- appended D8-2
+# --------------------------------------------------------------------------------------
+T1_4_MODE_T2_START_INDEX = FRAME_RANGE_MODE_F[0]     # 400 (step 25025): the deterministic comparison start = the lower end of the Mode F snapshot range [plan D8-2]
+T1_4_MODE_T2_FILES_PER_STEP = 1.0                    # 1 cached frame per RL step (0.625 s of LDM time per 1 s RL step under interpretation A, i.e. the truth evolves at 62.5 % speed); 1.6 files/step would exhaust the 200 cached frames after 125 steps [plan D8-2, 결정 2026-10-01]
+T1_4_MODE_SCHEDULES = {"T": (T1_4_MODE_T_START_INDEX, FILES_PER_RL_STEP),            # young plume, frames 100..338 over 150 steps (D7-2)
+                       "T2": (T1_4_MODE_T2_START_INDEX, T1_4_MODE_T2_FILES_PER_STEP)}  # developed plume, frames 400..549 over 150 steps (D8-2); (start index, files per RL step)
+FRAME_START_MODE_T2 = (FRAME_RANGE_MODE_F[0], FRAME_RANGE_MODE_F[1] - PF_ADJ_N_STEPS + 1)   # (400, 450): environment episode start range so that a 150-step episode stays inside the cached Mode F frames; longer episodes hold frame 599 (zero-order hold) [plan D8-2 / D8-3]
+D8_2_NB_R_GRID = (1.0, 3.0)                          # negbin dispersion candidates evaluated in Mode T2 next to the Poisson baseline (plan D8-2 "NB r in {1, 3}") [plan D8-2]
+T1_4_D7_3_NB_R_MODE_T2 = 1.0                         # [결정 2026-10-01 D8-2] one likelihood for the whole study: in Mode T2 r 1 and r 3 tie at 150 steps (open median 111.6 / 113.3 m) and r 1 is far better at 50 steps (46.5 / 113.3 m); the D7-2 rule names r 3 only through the regression tolerance (r 1 regression 21.0 m vs limit 20.0 m) [D8-2 결과]
+ENV_TRUTH_MODE_DEFAULT = "F"                        # [결정 2026-10-01 D8-2] training / evaluation truth mode: Mode F with a random frame in FRAME_RANGE_MODE_F per episode; Mode T2 is an optional robustness evaluation only (steady forward model + static kappa posterior drift on the growing plume: open median 46.5 m at 50 steps -> 111.6 m at 150; 150 frame loads per episode) [D8-2 결과, plan 4.5]

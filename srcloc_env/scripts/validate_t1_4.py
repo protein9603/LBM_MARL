@@ -5,6 +5,8 @@ Usage: python -m srcloc_env.scripts.validate_t1_4 [--seed 0] [--n-seeds 5] [--n-
                                                   [--likelihood poisson|negbin] [--nb-r 1.0] [--mode F|T]
                                                   [--baseline-json ...] [--timeavg-json ...]
                                                   [--adjoint-K 16 --adjoint-lam 0.005]   (D8-1 candidate runs; default config)
+                                                  --mode T2 = developed-plume time-varying truth, frames 400 + t (D8-2; config.T1_4_MODE_SCHEDULES)
+                                                  [--frame-index 599]   (Mode F snapshot other than config.T1_4_FRAME_INDEX; D8-2 frame-luck check)
 Writes config.CACHE_DIR / validate_t1_4.json, config.CACHE_DIR / t1_4_snapshots_{src}.npz (T1-5 / figure 5 input)
 and config.FIG_DIR / fig_t1_4_errors.png (config.FIG_DPI_FINAL) + _preview.png (config.FIG_DPI_PREVIEW).
 
@@ -177,6 +179,15 @@ def mode_t_densities(backend: LdmSlabBackend, paths_by_source: dict[int, np.ndar
     return out
 
 
+def mode_schedule(mode: str) -> tuple[int, float]:
+    """(start index, files per RL step) of a time-varying truth mode (config.T1_4_MODE_SCHEDULES: 'T' young plume,
+    'T2' developed plume frames >= 400; D8-2).  Mode 'F' has no schedule."""
+    if mode not in config.T1_4_MODE_SCHEDULES:
+        raise ValueError(f"mode {mode!r} has no frame schedule (time-varying modes: {list(config.T1_4_MODE_SCHEDULES)})")
+    start, fps = config.T1_4_MODE_SCHEDULES[mode]
+    return int(start), float(fps)
+
+
 def truth_densities(backend: LdmSlabBackend, source: int, paths: np.ndarray, mode: str = "F",
                     frame_index: int = config.T1_4_FRAME_INDEX, z: float = config.DRONE_Z) -> np.ndarray:
     """(n_steps, n_drones) truth densities [particles/m^3] of ``source`` along paths (n_steps, n_drones, 2):
@@ -186,7 +197,8 @@ def truth_densities(backend: LdmSlabBackend, source: int, paths: np.ndarray, mod
     n_steps, n_drones = paths.shape[:2]
     if mode == "F":
         return backend.density([source], paths.reshape(-1, 2), frame_index, z, 1.0).reshape(n_steps, n_drones)
-    return mode_t_densities(backend, {int(source): paths}, z)[int(source)]
+    start, fps = mode_schedule(mode)
+    return mode_t_densities(backend, {int(source): paths}, z, start, fps)[int(source)]
 
 
 def generate_measurements(backend: LdmSlabBackend, det: Detector, source: int, paths: np.ndarray, seed: int,
@@ -654,13 +666,16 @@ def main(argv: list[str] | None = None) -> dict:
                     help="Poisson / Mode F T1-4 JSON of the final Table 1 comparison and final_verdicts (D7-3); skipped if missing")
     ap.add_argument("--timeavg-json", type=Path, default=config.T1_4_TIMEAVG_JSON,
                     help="calibrate_timeavg.json (T1-3c offset_report) for the config.T1_4_OFFSET_SOURCE annotation; skipped if missing")
+    ap.add_argument("--frame-index", type=int, default=config.T1_4_FRAME_INDEX,
+                    help="Mode F truth frame index (default config.T1_4_FRAME_INDEX = 599; D8-2 checks other developed frames)")
     ap.add_argument("--adjoint-K", type=float, default=config.T1_4_ADJOINT_K,
                     help="filter B diffusivity K [m^2/s] (default config.T1_4_ADJOINT_K; D8-1 candidate comparison)")
     ap.add_argument("--adjoint-lam", type=float, default=config.T1_4_ADJOINT_LAM,
                     help="filter B loss rate lambda [1/s] (default config.T1_4_ADJOINT_LAM)")
     args = ap.parse_args(argv)
     if args.nb_r is None:                      # D7-3 defaults by truth mode (D7-2 recommendation)
-        args.nb_r = float(config.T1_4_D7_3_NB_R_MODE_F if args.mode == "F" else config.T1_4_D7_3_NB_R_MODE_T)
+        args.nb_r = float({"F": config.T1_4_D7_3_NB_R_MODE_F, "T": config.T1_4_D7_3_NB_R_MODE_T,
+                           "T2": config.T1_4_D7_3_NB_R_MODE_T2}[args.mode])
     sources = [int(s) for s in args.sources]
     filters = [f for f in FILTERS if f in args.filters]
 
@@ -702,18 +717,19 @@ def main(argv: list[str] | None = None) -> dict:
     for s in sources:
         paths_by_source[s], path_info[str(s)] = two_drone_paths(om, config.SOURCES_XY[s], args.n_steps)
     t0 = time.perf_counter()
-    if args.mode == "T":                       # one ascending pass over the Mode T frames for all sources (D7-2)
-        densities = mode_t_densities(backend, paths_by_source)
-        schedule = frame_schedule_mode_t(args.n_steps)
-        truth_info: dict | None = {"start": config.T1_4_MODE_T_START_INDEX, "files_per_step": config.FILES_PER_RL_STEP,
+    if args.mode != "F":                       # one ascending pass over the Mode T / T2 frames for all sources (D7-2, D8-2)
+        t_start_idx, t_fps = mode_schedule(args.mode)
+        densities = mode_t_densities(backend, paths_by_source, start=t_start_idx, files_per_step=t_fps)
+        schedule = frame_schedule_mode_t(args.n_steps, t_start_idx, t_fps)
+        truth_info: dict | None = {"mode": args.mode, "start": t_start_idx, "files_per_step": t_fps,
                                    "first_frame": int(schedule[0]), "last_frame": int(schedule[-1]),
                                    "n_unique_frames": int(np.unique(schedule).size), "frames": schedule.tolist()}
     else:
-        densities = {s: truth_densities(backend, s, paths_by_source[s], "F") for s in sources}
+        densities = {s: truth_densities(backend, s, paths_by_source[s], "F", args.frame_index) for s in sources}
         truth_info = None
     truth_seconds = time.perf_counter() - t0
-    if args.mode == "T":
-        print(f"[truth] mode T densities for {len(sources)} sources: frames {truth_info['first_frame']}..{truth_info['last_frame']} "
+    if args.mode != "F":
+        print(f"[truth] mode {args.mode} densities for {len(sources)} sources: frames {truth_info['first_frame']}..{truth_info['last_frame']} "
               f"({truth_info['n_unique_frames']} unique) in {truth_seconds:.0f} s", flush=True)
     for s in sources:
         true_xy = config.SOURCES_XY[s]
@@ -752,8 +768,9 @@ def main(argv: list[str] | None = None) -> dict:
     for f in filters:
         c = pooled_error_curve(runs[f], config.T1_3_OPEN_SOURCES)
         curves[f] = None if c is None else c.tolist()
-    truth_label = (f"frame {config.T1_4_FRAME_INDEX}" if args.mode == "F"
-                   else f"mode T frames {truth_info['first_frame']}-{truth_info['last_frame']}")
+    truth_label = (f"frame {args.frame_index}" if args.mode == "F"
+                   else f"mode {args.mode} frames {truth_info['first_frame']}-{truth_info['last_frame']} "
+                        f"({truth_info['files_per_step']:g} files / step)")
     make_figure(agg, runs, sources, unobs, args.fig, truth_label=truth_label, likelihood_label=nb_label,
                 adjoint_label=f"K {args.adjoint_K:g} / lambda {args.adjoint_lam:g}")
     final_table: str | None = None
@@ -763,11 +780,11 @@ def main(argv: list[str] | None = None) -> dict:
                                             max_counts, unobs, offset_note=offset_annotation(offset_rep), nb_label=nb_label)
         final_verd = final_verdicts(agg, baseline["aggregates"])
     res = {
-        "created": time.strftime("%Y-%m-%d %H:%M:%S"), "frame_index": config.T1_4_FRAME_INDEX,
-        "step": config.index_to_step(config.T1_4_FRAME_INDEX), "z": config.DRONE_Z,
+        "created": time.strftime("%Y-%m-%d %H:%M:%S"), "frame_index": args.frame_index,
+        "step": config.index_to_step(args.frame_index), "z": config.DRONE_Z,
         "mode": args.mode, "frame_schedule_mode_t": truth_info, "truth_density_seconds": truth_seconds,
         "mode_note": ("mode F: fixed snapshot frame_index (D6 truth)" if args.mode == "F" else
-                      "mode T: time-varying truth (frame_schedule_mode_t); errors are not directly comparable with mode F"),
+                      f"mode {args.mode}: time-varying truth (frame_schedule_mode_t, config.T1_4_MODE_SCHEDULES); errors are not directly comparable with mode F"),
         "sensor": {"k0": det.k0, "scale": config.T1_4_SENSOR_SCALE, "background_cps": det.background, "T": det.T,
                    "currie_threshold_cps": det.detection_threshold_cps()},
         "pf": {"n_particles": config.PF_N_PARTICLES, "kappa_ref": config.KAPPA_REF, "grid_decades": config.KAPPA_GRID_DECADES,
