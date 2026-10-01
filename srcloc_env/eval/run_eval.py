@@ -28,7 +28,7 @@ import numpy as np
 from srcloc_env import config
 from srcloc_env.baselines.policies import POLICIES, VERIFICATION_POLICIES, make_policy
 from srcloc_env.env.multi_agent import MultiDroneEnv
-from srcloc_env.env.source_env import Scene, SourceLocEnv
+from srcloc_env.env.source_env import Scene, SourceLocEnv, default_max_steps, load_scene
 from srcloc_env.eval.episodes import EpisodeSpec, load_episode_list, make_episode_list, save_episode_list
 from srcloc_env.eval.metrics import aggregate, paired_differences, table2_markdown
 
@@ -38,8 +38,9 @@ RECORD_FIELDS = ["method", "n_drones", "episode_id", "seed", "source", "frame", 
                  "entropy_final", "top_sigma_final_m", "wall_s", "step_ms_median", "tie_tol", "tie_frac", "all_tied_frac"]
 
 
-def make_env(scene: Scene, n_drones: int, mode: str) -> SourceLocEnv:
-    kw = dict(sources=config.ALL_SOURCES, truth_mode=mode, reflect_prob=0.0, terminate_on_success=not config.EVAL_NO_EARLY_STOP)
+def make_env(scene: Scene, n_drones: int, mode: str, max_steps: int | None = None) -> SourceLocEnv:
+    kw = dict(sources=config.ALL_SOURCES, truth_mode=mode, reflect_prob=0.0, terminate_on_success=not config.EVAL_NO_EARLY_STOP,
+              max_steps=int(max_steps) if max_steps is not None else default_max_steps(mode))
     return MultiDroneEnv(scene, n_drones=n_drones, **kw) if n_drones > 1 else SourceLocEnv(scene, **kw)
 
 
@@ -105,22 +106,22 @@ def run_episode(env: SourceLocEnv, policy, spec: EpisodeSpec, log_steps: bool = 
 
 
 # ------------------------------------------------------------------------------------------ workers
-_SCENE: Scene | None = None
-_ENVS: dict[tuple[int, str], SourceLocEnv] = {}
+_SCENES: dict[str, Scene] = {}
+_ENVS: dict[tuple[int, str, int], SourceLocEnv] = {}
 
 
 def _init_worker() -> None:
-    global _SCENE
-    _SCENE = Scene.load()
+    pass                                                       # scenes are loaded lazily per truth mode
 
 
 def _worker(task: dict) -> dict:
-    global _SCENE
-    if _SCENE is None:
-        _SCENE = Scene.load()
-    key = (int(task["n_drones"]), task["mode"])
+    mode = task["mode"]
+    if mode not in _SCENES:
+        _SCENES[mode] = load_scene(mode)
+    max_steps = int(task.get("max_steps") or default_max_steps(mode))
+    key = (int(task["n_drones"]), mode, max_steps)
     if key not in _ENVS:
-        _ENVS[key] = make_env(_SCENE, key[0], key[1])
+        _ENVS[key] = make_env(_SCENES[mode], key[0], mode, max_steps)
     env = _ENVS[key]
     spec = EpisodeSpec(**task["spec"])
     kw = task.get("policy_kw", {}).get(task["method"], {})
@@ -196,22 +197,24 @@ def import_records(out_dir: Path, spec: str) -> int:
     return n
 
 
-def build_summary(out_dir: Path, recs: list[dict], tag: str, mode: str, total_s: float, processes: int, methods: list[str]) -> dict:
+def build_summary(out_dir: Path, recs: list[dict], tag: str, mode: str, total_s: float, processes: int, methods: list[str],
+                  max_steps: int | None = None) -> dict:
+    max_steps = int(max_steps) if max_steps is not None else default_max_steps(mode)
     by_cfg: dict[str, list[dict]] = {}
     for r in recs:
         by_cfg.setdefault(f"{r['method']} ({r['n_drones']})", []).append(r)
     for label, rs in by_cfg.items():
         m, n = rs[0]["method"], rs[0]["n_drones"]
         write_records(out_dir / f"records_{m}_{n}drones.csv", sorted(rs, key=lambda r: r["episode_id"]))
-    agg = {label: aggregate(rs) for label, rs in by_cfg.items()}
-    agg_by_start = {st: {label: aggregate(rs, start_type=st) for label, rs in by_cfg.items()} for st in ("plume", "random")}
+    agg = {label: aggregate(rs, max_steps=max_steps) for label, rs in by_cfg.items()}
+    agg_by_start = {st: {label: aggregate(rs, max_steps=max_steps, start_type=st) for label, rs in by_cfg.items()} for st in ("plume", "random")}
     first = methods[0]
-    paired = {label: paired_differences(rs, by_cfg[f"{first} ({rs[0]['n_drones']})"])
+    paired = {label: paired_differences(rs, by_cfg[f"{first} ({rs[0]['n_drones']})"], max_steps)
               for label, rs in by_cfg.items() if f"{first} ({rs[0]['n_drones']})" in by_cfg and rs[0]["method"] != first}
     timing = {label: {"step_ms_median": float(np.median([r["step_ms_median"] for r in rs])),
                       "episode_wall_s_median": float(np.median([r["wall_s"] for r in rs]))} for label, rs in by_cfg.items()}
     table = table2_markdown(agg)
-    summary = {"created": time.strftime("%Y-%m-%d %H:%M:%S"), "tag": tag, "mode": mode, "methods": methods,
+    summary = {"created": time.strftime("%Y-%m-%d %H:%M:%S"), "tag": tag, "mode": mode, "max_steps": max_steps, "methods": methods,
                "n_drones": sorted({r["n_drones"] for r in recs}), "n_episodes": len({r["episode_id"] for r in recs}),
                "sources": sorted({r["source"] for r in recs}),
                "aggregates": agg, "aggregates_by_start_type": agg_by_start, "paired_vs_first_method": paired, "timing": timing, "table2_markdown": table,
@@ -239,6 +242,7 @@ def main(argv: list[str] | None = None) -> dict:
     ap.add_argument("--base-seed", type=int, default=config.EVAL_BASE_SEED)
     ap.add_argument("--mode", choices=list(config.ENV_MODES), default="F")
     ap.add_argument("--scale-fixed", type=float, default=None)
+    ap.add_argument("--max-steps", type=int, default=None, help="episode horizon (default 300 in Mode F, config.T2_MAX_STEPS = 150 in Mode T2)")
     ap.add_argument("--processes", type=int, default=config.EVAL_PROCESSES)
     ap.add_argument("--log-steps", action="store_true")
     ap.add_argument("--max-episodes", type=int, default=None, help="truncate the list (smoke tests)")
@@ -261,7 +265,7 @@ def main(argv: list[str] | None = None) -> dict:
         for r in recs:
             if r["method"] not in methods:
                 methods.append(r["method"])
-        return build_summary(out_dir, recs, args.tag, args.mode, 0.0, 0, methods)
+        return build_summary(out_dir, recs, args.tag, args.mode, 0.0, 0, methods, args.max_steps)
     if args.episodes is not None:
         specs = load_episode_list(args.episodes)
     else:
@@ -276,7 +280,7 @@ def main(argv: list[str] | None = None) -> dict:
             raise SystemExit(f"--ppo expects ALIAS=CHECKPOINT with a new alias, got {spec_s}")
         policy_kw[alias] = {"checkpoint": ckpt, "deterministic": args.ppo_deterministic}
         args.methods = list(args.methods) + [alias]
-    tasks = [{"method": m, "n_drones": n, "mode": args.mode, "spec": spec.__dict__, "log_steps": args.log_steps,
+    tasks = [{"method": m, "n_drones": n, "mode": args.mode, "max_steps": args.max_steps, "spec": spec.__dict__, "log_steps": args.log_steps,
               "step_dir": str(out_dir / "steps"), "policy_kw": policy_kw}
              for m in args.methods for n in args.n_drones for spec in specs]
     print(f"[eval] {len(specs)} episodes x {len(args.methods)} methods x {args.n_drones} drones = {len(tasks)} runs on "
@@ -292,7 +296,7 @@ def main(argv: list[str] | None = None) -> dict:
                     print(f"[eval] {i + 1}/{len(tasks)} done, {time.perf_counter() - t0:.0f} s", flush=True)
     else:
         recs = [_worker(t) for t in tasks]
-    return build_summary(out_dir, recs, args.tag, args.mode, time.perf_counter() - t0, args.processes, args.methods)
+    return build_summary(out_dir, recs, args.tag, args.mode, time.perf_counter() - t0, args.processes, args.methods, args.max_steps)
 
 
 if __name__ == "__main__":

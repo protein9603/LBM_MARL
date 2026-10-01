@@ -580,3 +580,12 @@ TRAIN_ROOT = CACHE_DIR / "train"      # run directories (config.json, train_log.
 EVAL_CKPT_BASE_SEED = 30_261_001      # seed of the checkpoint quick-evaluation list (curves only; never used for selection) [spec 6]
 EVAL_CKPT_EPISODES_PER_SOURCE = 5     # 12 sources x 5 = 60 episodes per checkpoint [spec 6]
 PPO_EVAL_DETERMINISTIC = False        # evaluation samples from the learned stochastic policy (the policy PPO optimises); the arg-max variant is a reference row only [결정 2026-10-02, 추정]
+
+
+# --------------------------------------------------------------------------------------
+# D11 - training and evaluation with a TIME-VARYING truth (Mode T2) [결정 2026-10-02, user: "T2 학습부터 진행"]
+# --------------------------------------------------------------------------------------
+SLAB_STACK_PATH = CACHE_DIR / "slab_stack_z15.npy"     # all N_FILES frames of the 15 m slab in ONE float16 array (N_FILES, 13, ny, nx), memory-mapped by every process (field/slab_stack.py)
+SLAB_STACK_META_PATH = CACHE_DIR / "slab_stack_z15.json"
+T2_MAX_STEPS = PF_ADJ_N_STEPS                          # 150: a T2 episode (frame 400 + t, 1 frame per step, start 400..450) stays inside the cached frames 400..599; the field evolves during the WHOLE episode (no zero-order hold) [D11]
+T2_TRAIN_START_RANGE = FRAME_START_MODE_T2             # (400, 450): episode start frame, uniform [D8-2 / D11]

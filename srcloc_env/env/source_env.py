@@ -129,6 +129,18 @@ class Scene:
 
 
 # ------------------------------------------------------------------------------------------- environment
+def default_max_steps(mode: str) -> int:
+    return config.T2_MAX_STEPS if mode == "T2" else config.MAX_EPISODE_STEPS
+
+
+def load_scene(mode: str) -> Scene:
+    """The real scene; Mode T2 reads its truth from the memory-mapped slab stack (D11), Mode F from the per-frame cache."""
+    if mode == "T2":
+        from srcloc_env.field.slab_stack import StackedSlabBackend
+        return Scene.load(backend=StackedSlabBackend())
+    return Scene.load()
+
+
 class SourceLocEnv(gym.Env):
     """Single-drone Gymnasium environment (module docstring).  ``scene`` is shared between envs / episodes."""
 

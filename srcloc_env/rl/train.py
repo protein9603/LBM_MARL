@@ -26,6 +26,7 @@ import torch
 
 from srcloc_env import config
 from srcloc_env.rl.ppo import ActorCritic, PPOConfig, PPOLearner, make_batch, net_from_state
+from srcloc_env.env.source_env import default_max_steps
 from srcloc_env.rl.rollout import RolloutPool
 
 LOG_FIELDS = ["iteration", "env_steps", "wall_s", "rollout_s", "update_s", "steps_per_s", "episodes_total", "success_ma", "strict_ma",
@@ -75,6 +76,8 @@ def train(a: argparse.Namespace) -> dict[str, Any]:
     run_dir = Path(a.out_root) / a.run_name
     run_dir.mkdir(parents=True, exist_ok=True)
     n = int(a.n_drones)
+    mode = str(a.truth_mode)
+    max_steps = int(a.max_steps) if a.max_steps else default_max_steps(mode)
     obs_dim = int(config.ENV_OBS_DIM + config.ENV_TEAMMATE_DIM * (n - 1))
     cfg = PPOConfig(n_steps=int(a.n_steps))
     torch.set_num_threads(1)
@@ -103,12 +106,12 @@ def train(a: argparse.Namespace) -> dict[str, Any]:
     info = {"args": {k: (str(v) if isinstance(v, Path) else v) for k, v in vars(a).items()}, "ppo": cfg.to_dict(), "obs_dim": obs_dim,
             "n_drones": n, "init": init_note, "git_commit": _git_commit(), "torch": torch.__version__,
             "train_sources": list(config.TRAIN_SOURCES), "reflect_prob": config.ENV_REFLECT_PROB_TRAIN,
-            "success_sigma_m": config.ENV_SUCCESS_SIGMA_M, "success_error_m": config.ENV_SUCCESS_ERROR_M}
+            "success_sigma_m": config.ENV_SUCCESS_SIGMA_M, "success_error_m": config.ENV_SUCCESS_ERROR_M, "truth_mode": mode, "max_steps": max_steps}
     cfg_name = "config.json" if not resume else f"config_resume_{it}.json"
     (run_dir / cfg_name).write_text(json.dumps(info, indent=2, ensure_ascii=False), encoding="utf-8")
-    print(f"[train] {a.run_name}: {n} drone(s), obs {obs_dim}, {a.procs} worker(s), {cfg.n_steps} steps each, total {a.total_steps} team steps; {init_note}", flush=True)
+    print(f"[train] {a.run_name}: {n} drone(s), truth {mode}, {max_steps}-step episodes, obs {obs_dim}, {a.procs} worker(s), {cfg.n_steps} steps each, total {a.total_steps} team steps; {init_note}", flush=True)
 
-    pool = RolloutPool(n, int(a.run_seed), int(a.procs), episode_idx=ep_idx)
+    pool = RolloutPool(n, int(a.run_seed), int(a.procs), episode_idx=ep_idx, env_kw={"truth_mode": mode, "max_steps": max_steps})
     ma: collections.deque = collections.deque(maxlen=int(a.ma_window))
     every = int(a.ckpt_every_steps) if a.ckpt_every_steps else max(int(a.total_steps) // 10, 1)
     next_step_ckpt = (steps // every + 1) * every
@@ -118,7 +121,8 @@ def train(a: argparse.Namespace) -> dict[str, Any]:
     all_evals: list[subprocess.Popen] = []
 
     def checkpoint(final: bool = False) -> None:
-        extra = {"iteration": it, "env_steps": steps, "episode_idx": list(ep_idx), "n_drones": n, "run_name": a.run_name, "ppo": cfg.to_dict()}
+        extra = {"iteration": it, "env_steps": steps, "episode_idx": list(ep_idx), "n_drones": n, "run_name": a.run_name, "ppo": cfg.to_dict(),
+                 "truth_mode": mode, "max_steps": max_steps}
         path = run_dir / ("final.pt" if final else f"ckpt_{steps:08d}.pt")
         save_checkpoint(path, learner, extra)
         save_checkpoint(latest, learner, extra)
@@ -183,6 +187,9 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--total-steps", type=int, default=config.TRAIN_M1_STEPS, help="team (environment) steps")
     ap.add_argument("--procs", type=int, default=config.PPO_N_PROCS, help="rollout worker processes (0 = in this process)")
     ap.add_argument("--n-steps", type=int, default=config.PPO_N_STEPS, help="team steps per worker per iteration")
+    ap.add_argument("--truth-mode", choices=list(config.ENV_MODES), default=config.ENV_TRUTH_MODE_DEFAULT,
+                    help="F = one frozen frame per episode, T2 = time-varying truth (frame 400 + t, D11)")
+    ap.add_argument("--max-steps", type=int, default=0, help="episode horizon (0 = 300 in Mode F, config.T2_MAX_STEPS in Mode T2)")
     ap.add_argument("--init-from", type=Path, default=None, help="checkpoint whose weights initialise the network (M1 to M2)")
     ap.add_argument("--resume", action="store_true")
     ap.add_argument("--out-root", type=Path, default=config.TRAIN_ROOT)

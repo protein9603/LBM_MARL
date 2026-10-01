@@ -16,10 +16,10 @@ from pathlib import Path
 import numpy as np
 
 from srcloc_env import config
-from srcloc_env.env.source_env import Scene
+from srcloc_env.env.source_env import default_max_steps, load_scene
 from srcloc_env.eval.episodes import make_episode_list
 from srcloc_env.eval.run_eval import make_env, run_episode, write_records
-from srcloc_env.rl.ppo_policy import PPOPolicy
+from srcloc_env.rl.ppo_policy import PPOPolicy, load_checkpoint
 
 
 def checkpoint_sources() -> list[int]:
@@ -29,11 +29,14 @@ def checkpoint_sources() -> list[int]:
 def evaluate_checkpoint(ckpt: str | Path, out_csv: str | Path, n_per_source: int = config.EVAL_CKPT_EPISODES_PER_SOURCE,
                         limit: int | None = None, deterministic: bool = config.PPO_EVAL_DETERMINISTIC) -> dict:
     pol = PPOPolicy(ckpt, alias="ppo", deterministic=deterministic)
+    ck = load_checkpoint(ckpt)
+    mode = str(ck.get("truth_mode", "F"))                        # the quick evaluation uses the truth mode and horizon the policy was trained on
+    max_steps = int(ck.get("max_steps") or default_max_steps(mode))
     n_drones = int(round((pol.net.obs_dim - config.ENV_OBS_DIM) / config.ENV_TEAMMATE_DIM)) + 1
-    specs = make_episode_list(checkpoint_sources(), n_per_source, config.EVAL_CKPT_BASE_SEED, "F")
+    specs = make_episode_list(checkpoint_sources(), n_per_source, config.EVAL_CKPT_BASE_SEED, mode)
     if limit is not None:
         specs = specs[:limit]
-    env = make_env(Scene.load(), n_drones, "F")
+    env = make_env(load_scene(mode), n_drones, mode, max_steps)
     t0 = time.perf_counter()
     recs = []
     for sp in specs:
@@ -42,7 +45,7 @@ def evaluate_checkpoint(ckpt: str | Path, out_csv: str | Path, n_per_source: int
         recs.append(rec)
     Path(out_csv).parent.mkdir(parents=True, exist_ok=True)
     write_records(Path(out_csv), recs)
-    out = {"n": len(recs), "wall_s": time.perf_counter() - t0, "n_drones": n_drones, "env_steps": pol.meta.get("env_steps")}
+    out = {"n": len(recs), "wall_s": time.perf_counter() - t0, "n_drones": n_drones, "env_steps": pol.meta.get("env_steps"), "mode": mode, "max_steps": max_steps}
     for g in ("train", "holdout"):
         sel = [r for r in recs if r["group"] == g]
         out[f"success_{g}"] = float(np.mean([r["success"] for r in sel])) if sel else float("nan")

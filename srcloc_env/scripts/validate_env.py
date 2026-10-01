@@ -25,7 +25,7 @@ from gymnasium.utils.env_checker import check_env
 
 from srcloc_env import config
 from srcloc_env.env.multi_agent import MultiDroneEnv
-from srcloc_env.env.source_env import Scene, SourceLocEnv
+from srcloc_env.env.source_env import Scene, SourceLocEnv, default_max_steps, load_scene
 
 
 def run_random_policy(env: SourceLocEnv, n_steps: int, seed: int) -> dict:
@@ -102,15 +102,16 @@ def main(argv: list[str] | None = None) -> dict:
     ap.add_argument("--warm-start", action=argparse.BooleanOptionalAction, default=config.ENV_GMM_WARM_START,
                     help="EM warm start from the previous step's summary (default config.ENV_GMM_WARM_START; --no-warm-start = cold k-means++ EM) (D8-4)")
     ap.add_argument("--mode", choices=list(config.ENV_MODES), default=config.ENV_TRUTH_MODE_DEFAULT)
+    ap.add_argument("--max-steps", type=int, default=0, help="episode horizon (0 = 300 in Mode F, config.T2_MAX_STEPS in Mode T2)")
     ap.add_argument("--reflect", action="store_true", help="also build the reflected scene and reflect 50 %% of the episodes")
     ap.add_argument("--out", type=Path, default=config.CACHE_DIR / "validate_env.json")
     args = ap.parse_args(argv)
 
     t0 = time.perf_counter()
-    scene = Scene.load()
+    scene = load_scene(args.mode)
     scene_r = scene.reflected_scene() if args.reflect else None
     load_s = time.perf_counter() - t0
-    env_kw = dict(truth_mode=args.mode, n_particles=args.n_particles, gmm_every=args.gmm_every,
+    env_kw = dict(truth_mode=args.mode, max_steps=args.max_steps or default_max_steps(args.mode), n_particles=args.n_particles, gmm_every=args.gmm_every,
                   gmm_iters=args.em_iters, gmm_warm_start=args.warm_start,
                   scene_reflected=scene_r, reflect_prob=config.ENV_REFLECT_PROB_TRAIN if args.reflect else 0.0)
     env = MultiDroneEnv(scene, n_drones=args.n_drones, **env_kw) if args.n_drones > 1 else SourceLocEnv(scene, **env_kw)

@@ -80,8 +80,10 @@ def test_success_terminates_the_training_episode_and_is_recorded(scene):
 class _FakePool:
     """In-process stand-in for RolloutPool on the synthetic scene."""
     scene: Scene = None
+    last_env_kw: dict | None = None
 
     def __init__(self, n_drones, run_seed, n_procs, episode_idx=None, env_kw=None):   # noqa: ANN001
+        _FakePool.last_env_kw = env_kw
         self.col = RolloutCollector(make_train_env(self.scene, self.scene.reflected_scene(), n_drones, **KW), run_seed, 0, (episode_idx or [0])[0])
 
     def collect(self, net, n_steps, iteration):   # noqa: ANN001
@@ -137,3 +139,30 @@ def test_ppo_policy_adapter_runs_an_episode_and_checks_the_input_size(scene, tmp
     env2 = make_train_env(scene, scene.reflected_scene(), 2, **KW)
     with pytest.raises(ValueError):
         run_episode(env2, PPOPolicy(ck), spec)                                     # 1-drone checkpoint on the 2-drone environment
+
+
+def test_t2_environment_advances_the_frame_every_step_and_uses_the_t2_horizon(scene):
+    kw = {k: v for k, v in KW.items() if k not in ("max_steps", "frame_range", "terminate_on_success")}
+    env = make_train_env(scene, scene.reflected_scene(), 1, truth_mode="T2", terminate_on_success=False, **kw)
+    assert env.max_steps == config.T2_MAX_STEPS == 150
+    env.reset(seed=3)
+    f0 = env.frame_at(0)
+    assert config.T2_TRAIN_START_RANGE[0] <= f0 <= config.T2_TRAIN_START_RANGE[1]
+    frames, n, done = [], 0, False
+    while not done:
+        _, _, term, trunc, info = env.step(8)
+        frames.append(info["frame"])
+        n += 1
+        done = term or trunc
+    assert n == 150 and frames == [f0 + t for t in range(150)] and max(frames) <= 599       # no zero-order hold inside the episode
+
+
+def test_train_passes_the_truth_mode_and_horizon_to_the_workers_and_the_checkpoint(scene, tmp_path, monkeypatch):
+    _run(["--run-name", "t2", "--procs", "0", "--n-steps", "32", "--out-root", str(tmp_path), "--no-ckpt-eval", "--n-drones", "1",
+          "--total-steps", "32", "--truth-mode", "T2"], scene, monkeypatch)
+    assert _FakePool.last_env_kw == {"truth_mode": "T2", "max_steps": config.T2_MAX_STEPS}
+    ck = torch.load(tmp_path / "t2" / "final.pt", map_location="cpu", weights_only=False)
+    assert ck["truth_mode"] == "T2" and ck["max_steps"] == 150
+    _run(["--run-name", "f", "--procs", "0", "--n-steps", "32", "--out-root", str(tmp_path), "--no-ckpt-eval", "--n-drones", "1",
+          "--total-steps", "32"], scene, monkeypatch)
+    assert _FakePool.last_env_kw == {"truth_mode": "F", "max_steps": config.MAX_EPISODE_STEPS}
