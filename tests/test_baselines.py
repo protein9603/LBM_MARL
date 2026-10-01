@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 
 from srcloc_env import config
-from srcloc_env.baselines.policies import (GmmInfotaxisPolicy, GreedyMapPolicy, LawnmowerPolicy, RandomPolicy,
+from srcloc_env.baselines.policies import (GmmInfotaxisPolicy, GreedyMapPolicy, LawnmowerBandPolicy, RandomPolicy,
                                            _hist_entropy, make_policy)
 from srcloc_env.env.multi_agent import MultiDroneEnv
 from srcloc_env.env.source_env import Scene, SourceLocEnv
@@ -49,9 +49,9 @@ def test_random_policy_respects_masks_and_is_seeded(scene):
     assert all(np.array_equal(x, y) for x, y in zip(a1, a2)) and len(a1) == 30
 
 
-def test_lawnmower_advances_upwind_and_sweeps(scene):
+def test_lawnmower_band_v1_advances_upwind_and_sweeps(scene):
     env = SourceLocEnv(scene, max_steps=60, **KW)
-    pol = LawnmowerPolicy()
+    pol = LawnmowerBandPolicy()
     acts, infos = _rollout(env, pol, seed=5, n_steps=60, options={"source": 2, "start_xy": (190.0, -20.0)})
     xs = np.array([i["drone_xy"][0] for i in infos]); ys = np.array([i["drone_xy"][1] for i in infos])
     assert xs[-1] < xs[0] - 60                                      # moved upwind (-x): waypoints are ~7 m apart (x and y both advance 5 m), the 5 m drone lags on diagonals

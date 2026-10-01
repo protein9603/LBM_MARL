@@ -30,6 +30,7 @@ from srcloc_env.env.multi_agent import MultiDroneEnv
 from srcloc_env.env.source_env import Scene, SourceLocEnv
 from srcloc_env.eval.episodes import load_episode_list
 from srcloc_env.field.concentration_field import LdmSlabBackend
+from srcloc_env.baselines.coverage import coverage_waypoints
 from srcloc_env.scripts.validate_pf_adjoint import lawnmower_path
 
 METHODS = ("random", "lawnmower", "greedy_map", "gmm_infotaxis")
@@ -151,9 +152,9 @@ def _load_log(tag: str, method: str, n: int, ep: int):
     return {k: z[k] for k in z.files if k != "meta"}, json.loads(str(z["meta"]))
 
 
-def fig_policies(tag: str, ep: int, n: int, out: Path) -> dict:
+def fig_policies(tag: str, ep: int, n: int, out: Path, lawn_tag: str | None = None) -> dict:
     be, om = LdmSlabBackend(), ObstacleMap.load()
-    logs = {m: _load_log(tag, m, n, ep) for m in METHODS}
+    logs = {m: _load_log(lawn_tag if (m == "lawnmower" and lawn_tag) else tag, m, n, ep) for m in METHODS}
     meta0 = logs["random"][1]
     src, frame = int(meta0["source"]), int(meta0["frame"])
     sf = be.slab(frame)
@@ -194,7 +195,7 @@ def fig_policies(tag: str, ep: int, n: int, out: Path) -> dict:
     return summary
 
 
-def fig_lawnmower_plan(tag: str, ep: int, n: int, out: Path) -> dict:
+def fig_lawnmower_band_plan(tag: str, ep: int, n: int, out: Path) -> dict:
     be, om = LdmSlabBackend(), ObstacleMap.load()
     log, meta = _load_log(tag, "lawnmower", n, ep)
     src, frame = int(meta["source"]), int(meta["frame"])
@@ -226,6 +227,37 @@ def fig_lawnmower_plan(tag: str, ep: int, n: int, out: Path) -> dict:
     out.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out, dpi=130); plt.close(fig)
     return info
+
+
+def fig_lawnmower_plan(tag: str, ep: int, n: int, out: Path) -> dict:
+    """Full-coverage lawnmower: planned waypoints per drone (left) versus the flown track (right) over the whole prior box."""
+    be, om = LdmSlabBackend(), ObstacleMap.load()
+    log, meta = _load_log(tag, "lawnmower", n, ep)
+    src, frame = int(meta["source"]), int(meta["frame"])
+    sf = be.slab(frame)
+    dens = sf.density[list(sf.sources).index(src), sf.z_index(config.DRONE_Z)].astype(float)
+    T = log["drone_xy"].shape[0]
+    starts = log["drone_xy"][0]                                             # position after the first move (within 5 m of the start)
+    plans, pinfo = coverage_waypoints(starts, (config.PF_PRIOR_X, config.PF_PRIOR_Y), "cross", config.LAWN_ROW_SPACING_M,
+                                      config.LAWN_WP_SPACING_M, om, config.DRONE_Z)
+    win = (300.0, -580.0, 1340.0, 580.0)
+    fig, axes = plt.subplots(1, 2, figsize=(15.0, 7.4), constrained_layout=True)
+    for d in range(n):
+        xy = log["drone_xy"][:, d]
+        axes[0].plot(plans[d][:, 0], plans[d][:, 1], ".-", color=COLS[d], linewidth=0.8, markersize=3, label=f"drone {d}: rows {pinfo['orders'][d]} in this order")
+        for ax in axes:
+            ax.plot(*xy[0], marker="s", markersize=9, color=COLS[d], markeredgecolor="k", zorder=6)
+        axes[1].scatter(xy[:, 0], xy[:, 1], c=np.arange(T), cmap="viridis" if d == 0 else "autumn", s=6, zorder=3)
+    for ax, title in zip(axes, (f"planned waypoints ({pinfo['n_rows']} cross-wind rows, {config.LAWN_ROW_SPACING_M:.0f} m apart; "
+                                f"{'sub-areas: ' + str(pinfo['groups']) if n > 1 else 'one drone sweeps all rows'})", "flown track (colour = step)")):
+        _base(ax, om, win, dens, sf.grid, config.SOURCES_XY[src])
+        ax.set_title(title, fontsize=10); ax.set_xlabel("x [m]"); ax.set_ylabel("y [m]")
+    axes[0].legend(fontsize=8, loc="lower left")
+    fig.suptitle(f"Full-coverage lawnmower, episode {ep}, {n} drone{'s' if n > 1 else ''}: rows are transects across the wind (along y); squares = start", fontsize=10)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out, dpi=130); plt.close(fig)
+    return {"groups": pinfo["groups"], "orders": pinfo["orders"], "n_rows": pinfo["n_rows"], "success": bool(meta["success"]),
+            "final_error_m": float(log["map_error"][-1]), "path_m": [float(np.hypot(*np.diff(log["drone_xy"][:, d], axis=0).T).sum()) for d in range(n)]}
 
 
 def fig_infotaxis_scores(tag: str, ep: int, step: int, out: Path) -> dict:
@@ -281,6 +313,7 @@ def main(argv: list[str] | None = None) -> dict:
     ap.add_argument("--tag", default="t2_4_v2")
     ap.add_argument("--episode", type=int, default=81)
     ap.add_argument("--infotaxis-episode", type=int, default=48)
+    ap.add_argument("--lawn-tag", default="t2_4_lawn_v2", help="evaluation tag holding the full-coverage lawnmower logs")
     ap.add_argument("--infotaxis-step", type=int, default=25)
     ap.add_argument("--out-dir", type=Path, default=Path(__file__).resolve().parents[2] / "docs" / "figures")
     args = ap.parse_args(argv)
@@ -295,9 +328,11 @@ def main(argv: list[str] | None = None) -> dict:
         return summ
     out = {}
     out["starts"] = fig_starts(args.out_dir / "start_positions_two_drones.png")
-    out["policies_1drone"] = fig_policies(args.tag, args.episode, 1, args.out_dir / "baselines_one_drone_example.png")
-    out["policies_2drones"] = fig_policies(args.tag, args.episode, 2, args.out_dir / "baselines_two_drones_example.png")
-    out["lawnmower"] = fig_lawnmower_plan(args.tag, args.episode, 2, args.out_dir / "lawnmower_plan_vs_track.png")
+    out["policies_1drone"] = fig_policies(args.tag, args.episode, 1, args.out_dir / "baselines_one_drone_example.png", args.lawn_tag)
+    out["policies_2drones"] = fig_policies(args.tag, args.episode, 2, args.out_dir / "baselines_two_drones_example.png", args.lawn_tag)
+    out["lawnmower"] = fig_lawnmower_plan(args.lawn_tag, args.episode, 2, args.out_dir / "lawnmower_plan_vs_track.png")
+    out["lawnmower_1drone"] = fig_lawnmower_plan(args.lawn_tag, args.episode, 1, args.out_dir / "lawnmower_plan_vs_track_one_drone.png")
+    out["lawnmower_band_v1"] = fig_lawnmower_band_plan(args.tag, args.episode, 2, args.out_dir / "lawnmower_v1_band_plan_vs_track.png")
     out["infotaxis"] = fig_infotaxis_scores(args.tag, args.infotaxis_episode, args.infotaxis_step, args.out_dir / "infotaxis_scores_example.png")
     (d / "explainer_numbers.json").write_text(json.dumps(out, indent=2, default=lambda o: o.item() if hasattr(o, "item") else str(o)), encoding="utf-8")
     print(json.dumps(out, indent=2, default=lambda o: o.item() if hasattr(o, "item") else str(o)))

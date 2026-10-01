@@ -541,3 +541,11 @@ ENV_SUCCESS_ERROR_M = 50.0   # ... and |MAP - truth| < 50 m. Evidence: a perfect
 # SUCCESS_SIGMA_M = 15 m / SUCCESS_ERROR_M = 20 m (plan 4.5) stay as the STRICT criterion: every evaluation episode records both
 EVAL_NO_EARLY_STOP = True    # run_eval: episodes run the full MAX_EPISODE_STEPS (terminate_on_success=False) so that every criterion / threshold can be evaluated afterwards from the per-step series [결정 D9-4]
 G2_ORACLE_MIN_SUCCESS_RATE = 0.40         # gate G2: the privileged-information oracle (perfect search) must reach this primary-criterion success rate on the 12 observable sources, i.e. the environment / PF / success test can succeed (smoke_v2: 56 %, strict 25 %) [결정 D9-4]
+
+# --------------------------------------------------------------------------------------
+# Full-coverage lawnmower baseline  [사용자 결정 2026-10-01: 영역 전체를 훑고, 2대는 영역을 나눠 훑는다; baselines/coverage.py]  -- appended D9-4 revision
+# --------------------------------------------------------------------------------------
+LAWN_ROW_SPACING_M = 150.0       # cross-wind transects (rows along y) every ~150 m over the PF prior box: detectable plume regions are 230 m long (median; p25 160 m) and 20 m wide (median; p75 50 m) [측정 D9-4]
+LAWN_ALONG_SPACING_M = 100.0     # classical along-wind rows (variant 'lawnmower_alongwind'): the plume width (20-50 m) would need 20-50 m spacing, 100 m is the usual sensor-swath choice [추정]
+LAWN_WP_SPACING_M = 25.0         # waypoint spacing along a row (the geodesic follower flies around buildings between waypoints; one 39 ms field per waypoint change) [추정]
+LAWN_ADVANCE_M = 10.0            # the next waypoint becomes the target when the drone is within this distance of the current one (2 steps) [추정]

@@ -32,6 +32,7 @@ from scipy.special import gammaln, logsumexp
 from scipy.stats import poisson as _poisson
 
 from srcloc_env import config
+from srcloc_env.baselines.coverage import coverage_waypoints
 from srcloc_env.baselines.planning import GeodesicField
 from srcloc_env.env.drone import ACTION_STAY
 from srcloc_env.scripts.validate_pf_adjoint import lawnmower_path
@@ -125,8 +126,11 @@ class RandomPolicy(Policy):
         return np.array([int(self.rng.choice(np.flatnonzero(m))) for m in masks], dtype=np.int64)
 
 
-class LawnmowerPolicy(Policy):
-    name = "lawnmower"
+class LawnmowerBandPolicy(Policy):
+    """VERSION 1 of the lawnmower (kept for the record, not a default method): a 100 m wide sawtooth band around the drone's own
+    start y that runs back and forth along x; the waypoint index equals the step number, so the drone lags behind the
+    waypoints (flown sweep ~66 m wide at 4.2 m/step) and never leaves its start band."""
+    name = "lawnmower_band"
 
     def __init__(self, sweep_width: float = config.PF_ADJ_SWEEP_WIDTH_M, direction: float = -1.0) -> None:
         self.sweep_width = float(sweep_width)
@@ -152,6 +156,51 @@ class LawnmowerPolicy(Policy):
             d[~mask] = np.inf
             acts.append(int(np.argmin(d)))
         return np.array(acts, dtype=np.int64)
+
+
+class LawnmowerPolicy(Policy):
+    """Full-coverage lawnmower (boustrophedon) over the whole PF prior box (baselines/coverage.py).  Rows are cross-wind
+    transects (along y) every config.LAWN_ROW_SPACING_M; with several drones the rows are split into contiguous sub-areas, one
+    per drone.  Each drone flies to its first row, sweeps its rows in alternating directions and, between waypoints,
+    follows the shortest free path around the buildings (GeodesicField).  The next waypoint is taken as soon as the drone is
+    within config.LAWN_ADVANCE_M of the current one, so the flown track is the planned track (no lag).  Measurements and the
+    belief are not used."""
+    name = "lawnmower"
+    axis = "cross"
+
+    def __init__(self, spacing: float | None = None, wp_spacing: float = config.LAWN_WP_SPACING_M,
+                 advance_m: float = config.LAWN_ADVANCE_M) -> None:
+        self.spacing = float(spacing if spacing is not None else (config.LAWN_ROW_SPACING_M if self.axis == "cross"
+                                                                  else config.LAWN_ALONG_SPACING_M))
+        self.wp_spacing, self.advance_m = float(wp_spacing), float(advance_m)
+        self.plans: list[np.ndarray] = []
+        self.idx: list[int] = []
+        self._followers: list[_TargetFollower] = []
+        self.plan_info: dict = {}
+
+    def reset(self, env, info: dict) -> None:
+        self.plans, self.plan_info = coverage_waypoints(_positions(env), (env.prior_x, env.prior_y), self.axis, self.spacing,
+                                                        self.wp_spacing, env.scene.obstacles, env.z)
+        self.idx = [0] * len(self.plans)
+        self._followers = [_TargetFollower(retarget_m=1.0) for _ in self.plans]
+
+    def act(self, env, obs, info) -> np.ndarray:
+        acts = []
+        for d, xy in enumerate(_positions(env)):
+            plan = self.plans[d]
+            while self.idx[d] < len(plan) and np.hypot(*(xy - plan[self.idx[d]])) <= self.advance_m:
+                self.idx[d] += 1
+            if self.idx[d] >= len(plan):
+                acts.append(ACTION_STAY)                                   # sub-area finished
+            else:
+                acts.append(self._followers[d].step_towards(env, xy, plan[self.idx[d]]))
+        return np.array(acts, dtype=np.int64)
+
+
+class LawnmowerAlongWindPolicy(LawnmowerPolicy):
+    """Variant of the full-coverage lawnmower with rows ALONG the wind (along x, config.LAWN_ALONG_SPACING_M apart)."""
+    name = "lawnmower_alongwind"
+    axis = "along"
 
 
 class GreedyMapPolicy(Policy):
@@ -205,10 +254,18 @@ class GmmInfotaxisPolicy(Policy):
         self.rng = np.random.default_rng(seed)
         self.last_scores: list[np.ndarray] = []
         self._followers: list[_TargetFollower] = []
+        self.n_decisions = self.n_tie_resolved = self.n_all_tied = 0
+
+    def stats(self) -> dict:
+        """Fractions of the decisions of this episode: tie_frac = a greedy tie-break was applied (several allowed actions within
+        tie_tol of the best), all_tied_frac = every allowed action was within tie_tol (pure greedy-MAP behaviour)."""
+        n = max(self.n_decisions, 1)
+        return {"tie_tol": self.tie_tol, "tie_frac": self.n_tie_resolved / n, "all_tied_frac": self.n_all_tied / n}
 
     def reset(self, env, info: dict) -> None:
         self.rng = np.random.default_rng([int(info["source"]), int(info["frame"]), 11])
         self._followers = [_TargetFollower() for _ in range(_n_drones(env))]
+        self.n_decisions = self.n_tie_resolved = self.n_all_tied = 0
 
     def _subsample(self, env) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         pf = env.pf
@@ -288,6 +345,9 @@ class GmmInfotaxisPolicy(Policy):
                 scores[a], ybar[a] = self._expected_entropy(env, xy_sub, w_sub, logv_sub, land[a], crn)
             a_best = int(np.argmin(scores))                                 # minimal expected posterior entropy
             near = np.flatnonzero(mask & (scores <= scores.min() + self.tie_tol))
+            self.n_decisions += 1
+            self.n_all_tied += int(near.size == int(mask.sum()))
+            self.n_tie_resolved += int(near.size > 1)
             if near.size > 1:                                               # flat information (no signal): follow the belief (greedy tie-break, D9-4)
                 vals = self._followers[i_drone].landing_values(env, env.gmm.means[0], land[near])
                 a_best = int(near[int(np.argmin(vals))])
@@ -351,7 +411,8 @@ class OracleLoiterPolicy(Policy):
 
 
 POLICIES = {"random": RandomPolicy, "lawnmower": LawnmowerPolicy, "greedy_map": GreedyMapPolicy, "gmm_infotaxis": GmmInfotaxisPolicy}
-VERIFICATION_POLICIES = {"oracle_loiter": OracleLoiterPolicy}         # privileged-information bounds, excluded from the default method lists
+VARIANT_POLICIES = {"lawnmower_band": LawnmowerBandPolicy, "lawnmower_alongwind": LawnmowerAlongWindPolicy}   # reference variants, excluded from the default method lists
+VERIFICATION_POLICIES = {"oracle_loiter": OracleLoiterPolicy, **VARIANT_POLICIES}   # privileged-information bound and reference variants, never in the default list
 
 
 def make_policy(name: str, **kwargs: Any) -> Policy:
