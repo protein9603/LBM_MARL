@@ -90,7 +90,8 @@ def main(argv: list[str] | None = None) -> dict:
     ap.add_argument("--gmm-every", type=int, default=config.ENV_GMM_EVERY)
     ap.add_argument("--n-particles", type=int, default=config.PF_N_PARTICLES)
     ap.add_argument("--em-iters", type=int, default=config.ENV_GMM_EM_ITERS, help="GMM EM iterations per refresh (plan fallback 10)")
-    ap.add_argument("--warm-start", action="store_true", help="EM warm start from the previous step's summary (D8-4)")
+    ap.add_argument("--warm-start", action=argparse.BooleanOptionalAction, default=config.ENV_GMM_WARM_START,
+                    help="EM warm start from the previous step's summary (default config.ENV_GMM_WARM_START; --no-warm-start = cold k-means++ EM) (D8-4)")
     ap.add_argument("--mode", choices=list(config.ENV_MODES), default=config.ENV_TRUTH_MODE_DEFAULT)
     ap.add_argument("--reflect", action="store_true", help="also build the reflected scene and reflect 50 %% of the episodes")
     ap.add_argument("--out", type=Path, default=config.CACHE_DIR / "validate_env.json")
