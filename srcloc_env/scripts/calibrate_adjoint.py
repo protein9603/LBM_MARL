@@ -5,6 +5,8 @@ docs/lbm_forward_model.md section 6; slide 9, table 1, figure 3).
 Usage: python -m srcloc_env.scripts.calibrate_adjoint [--index 599] [--out <CACHE_DIR>/calibrate_adjoint.json]
        [--fig-dir <FIG_DIR>] [--analytic <CACHE_DIR>/calibrate_forward.json]
        [--fields-out <CACHE_DIR>/adjoint_fields_chosen.npz]
+       [--chosen K LAM [--chosen-layer single_15m] [--chosen-reason '...']]   (D8-1: fix the combination whose
+       fields / figures / per-source stats are written; the grid argmin is still reported under 'grid_argmin')
 
 Method (mirrors scripts/calibrate_forward.py so that the two models are directly comparable)
 -----------------------------------------------------------------------------------------
@@ -492,6 +494,12 @@ def main(argv: list[str] | None = None) -> dict:
     ap.add_argument("--fields-out", type=Path, default=config.CACHE_DIR / "adjoint_fields_chosen.npz")
     ap.add_argument("--analytic", type=Path, default=config.CACHE_DIR / "calibrate_forward.json")
     ap.add_argument("--fig-dir", type=Path, default=config.FIG_DIR)
+    ap.add_argument("--chosen", type=float, nargs=2, metavar=("K", "LAM"), default=None,
+                    help="override the selection: write the fields / figures / per-source stats of this (K, lam) "
+                         "(must be a grid row); the argmin row stays in the JSON as grid_argmin (D8-1)")
+    ap.add_argument("--chosen-layer", default="single_15m", choices=list(config.T1_3B_WIND_LAYERS),
+                    help="wind layer of --chosen (D5-1: the layer axis was uninformative; single 15 m wind)")
+    ap.add_argument("--chosen-reason", default="", help="free-text provenance of --chosen recorded in the JSON")
     args = ap.parse_args(argv)
     t_start = time.perf_counter()
 
@@ -515,7 +523,19 @@ def main(argv: list[str] | None = None) -> dict:
     t0 = time.perf_counter()
     rows = run_grid(grid, uv_by_layer, blocked, src_ids, src_xy, slabs)
     grid_s = time.perf_counter() - t0
-    k, spread = select_row(rows)
+    k_argmin, spread = select_row(rows)
+    k = k_argmin
+    override = None
+    if args.chosen is not None:
+        want = (float(args.chosen[0]), float(args.chosen[1]), args.chosen_layer)
+        hits = [i for i, r in enumerate(rows) if (float(r["K"]), float(r["lam"]), r["wind_layer"]) == want]
+        if not hits:
+            raise SystemExit(f"--chosen {want} is not a grid row (K in {config.ADJ_K_CANDIDATES}, lam in "
+                             f"{config.ADJ_LAMBDA_CANDIDATES}, layers {list(config.T1_3B_WIND_LAYERS)})")
+        k = hits[0]
+        override = {"K": want[0], "lam": want[1], "wind_layer": want[2], "row_index": k, "reason": args.chosen_reason,
+                    config.T1_3B_SELECTION_KEY: rows[k][config.T1_3B_SELECTION_KEY],
+                    "argmin_" + config.T1_3B_SELECTION_KEY: rows[k_argmin][config.T1_3B_SELECTION_KEY]}
     chosen = rows[k]
     combo = {"wind_layer": chosen["wind_layer"], "wind_band": chosen["wind_band"], "K": chosen["K"], "lam": chosen["lam"],
              "row_index": k}
@@ -576,7 +596,7 @@ def main(argv: list[str] | None = None) -> dict:
     cnt = comparison["counts"]
     caption = (f"표 1 (T1-3 vs T1-3b, frame {args.index}, z = {config.DRONE_Z:g} m): analytic chosen {ana_combo['wind_mode']} "
                f"U = {ana_combo['U']:g} m/s, sigma_v = {ana_combo['sigma_v']:g} m/s; adjoint chosen K = {combo['K']:g} m^2/s, "
-               f"lambda = {combo['lam']:g} 1/s, wind layer {combo['wind_layer']} (selection: min mean_train std_dense = "
+               f"lambda = {combo['lam']:g} 1/s, wind layer {combo['wind_layer']} ({'override --chosen (D8-1); grid argmin ' + repr((rows[k_argmin]['K'], rows[k_argmin]['lam'])) + '; ' if override else 'selection: '}min mean_train std_dense = "
                f"{chosen['mean_train_std_dense']:.3f}; plain std {chosen['mean_train_std']:.3f}); implied kappa_ref adjoint "
                f"{kappa['kappa_ref_implied']:.3e} vs analytic {kappa['analytic_kappa_ref_implied']:.3e}; "
                f"adjoint std_dense < analytic: open {cnt['open']['adjoint_better_std_dense']}/{cnt['open']['n']}, "
@@ -616,6 +636,10 @@ def main(argv: list[str] | None = None) -> dict:
         "g_min": config.T1_3B_G_MIN, "dense_fraction": config.T1_3_INFO_DENSITY_FRACTION,
         "grid_table": grid_table,
         "chosen": combo, "chosen_row_summary": {k2: v for k2, v in chosen.items() if k2 != "per_source"},
+        "grid_argmin": {"row_index": k_argmin, "K": rows[k_argmin]["K"], "lam": rows[k_argmin]["lam"],
+                        "wind_layer": rows[k_argmin]["wind_layer"],
+                        config.T1_3B_SELECTION_KEY: rows[k_argmin][config.T1_3B_SELECTION_KEY]},
+        "chosen_override": override,
         "discriminability": spread,
         "alternative_argmins": alternatives,
         "best_per_wind_layer": best_per_layer,

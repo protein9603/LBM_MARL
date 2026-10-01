@@ -4,6 +4,7 @@ Usage: python -m srcloc_env.scripts.validate_t1_4 [--seed 0] [--n-seeds 5] [--n-
                                                   [--filters A B] [--out ...] [--fig ...]
                                                   [--likelihood poisson|negbin] [--nb-r 1.0] [--mode F|T]
                                                   [--baseline-json ...] [--timeavg-json ...]
+                                                  [--adjoint-K 16 --adjoint-lam 0.005]   (D8-1 candidate runs; default config)
 Writes config.CACHE_DIR / validate_t1_4.json, config.CACHE_DIR / t1_4_snapshots_{src}.npz (T1-5 / figure 5 input)
 and config.FIG_DIR / fig_t1_4_errors.png (config.FIG_DPI_FINAL) + _preview.png (config.FIG_DPI_PREVIEW).
 
@@ -541,7 +542,8 @@ def final_verdicts(agg_nb: dict[str, dict[str, dict]], agg_poisson: dict[str, di
 # ---------------------------------------------------------------------------------------- figure
 def make_figure(agg: dict[str, dict[str, dict]], runs: dict[str, dict[int, list[dict]]], sources: Sequence[int],
                 unobservable: Sequence[int], path: Path, open_sources: Sequence[int] = config.T1_3_OPEN_SOURCES,
-                truth_label: str = f"frame {config.T1_4_FRAME_INDEX}", likelihood_label: str = "") -> None:
+                truth_label: str = f"frame {config.T1_4_FRAME_INDEX}", likelihood_label: str = "",
+                adjoint_label: str = f"K {config.T1_4_ADJOINT_K} / lambda {config.T1_4_ADJOINT_LAM}") -> None:
     """Left: grouped bars (A, B) of the median final MAP error per source with p90 whiskers; right: pooled
     open-source error-vs-step curves of the four filters.  truth_label names the truth in the x label (Mode F frame
     or the Mode T frame range; D7-2); likelihood_label (e.g. 'negbin r=1') is appended to the title (D7-3)."""
@@ -600,7 +602,7 @@ def make_figure(agg: dict[str, dict[str, dict]], runs: dict[str, dict[int, list[
         ax2.spines[sp].set_visible(False)
     fig.suptitle(f"T1-4: RB-PF on the LDM slab truth, 2-drone lawnmower, N = {config.PF_N_PARTICLES}, "
                  f"{config.T1_4_N_SEEDS} seeds; analytic U {config.T1_4_ANALYTIC_U} / sigma_v {config.T1_4_ANALYTIC_SIGMA_V}, "
-                 f"adjoint K {config.T1_4_ADJOINT_K} / lambda {config.T1_4_ADJOINT_LAM}"
+                 f"adjoint {adjoint_label}"
                  + (f"; likelihood {likelihood_label}" if likelihood_label else ""), fontsize=11)
     path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(path, dpi=config.FIG_DPI_FINAL)
@@ -652,6 +654,10 @@ def main(argv: list[str] | None = None) -> dict:
                     help="Poisson / Mode F T1-4 JSON of the final Table 1 comparison and final_verdicts (D7-3); skipped if missing")
     ap.add_argument("--timeavg-json", type=Path, default=config.T1_4_TIMEAVG_JSON,
                     help="calibrate_timeavg.json (T1-3c offset_report) for the config.T1_4_OFFSET_SOURCE annotation; skipped if missing")
+    ap.add_argument("--adjoint-K", type=float, default=config.T1_4_ADJOINT_K,
+                    help="filter B diffusivity K [m^2/s] (default config.T1_4_ADJOINT_K; D8-1 candidate comparison)")
+    ap.add_argument("--adjoint-lam", type=float, default=config.T1_4_ADJOINT_LAM,
+                    help="filter B loss rate lambda [1/s] (default config.T1_4_ADJOINT_LAM)")
     args = ap.parse_args(argv)
     if args.nb_r is None:                      # D7-3 defaults by truth mode (D7-2 recommendation)
         args.nb_r = float(config.T1_4_D7_3_NB_R_MODE_F if args.mode == "F" else config.T1_4_D7_3_NB_R_MODE_T)
@@ -670,7 +676,7 @@ def main(argv: list[str] | None = None) -> dict:
     nb_label = f"negbin r={args.nb_r:g}" if args.likelihood == "negbin" else args.likelihood
     cal_match = {"analytic": bool(analytic_chosen.get("U") == config.T1_4_ANALYTIC_U and analytic_chosen.get("sigma_v") == config.T1_4_ANALYTIC_SIGMA_V
                                   and analytic_chosen.get("wind_mode", "global") == "global"),
-                 "adjoint": bool(adjoint_chosen.get("K") == config.T1_4_ADJOINT_K and adjoint_chosen.get("lam") == config.T1_4_ADJOINT_LAM
+                 "adjoint": bool(adjoint_chosen.get("K") == args.adjoint_K and adjoint_chosen.get("lam") == args.adjoint_lam
                                  and adjoint_chosen.get("wind_band") is None)}
     models: dict[str, object] = {}
     setup: dict[str, float] = {}
@@ -678,14 +684,14 @@ def main(argv: list[str] | None = None) -> dict:
         models["analytic"] = GaussianPlume(ForwardParams(U=config.T1_4_ANALYTIC_U, sigma_v=config.T1_4_ANALYTIC_SIGMA_V), wind_mode="global")
     if any(FILTER_MODEL[f] == "adjoint" for f in filters):
         t0 = time.perf_counter()
-        params = AdjointParams(K=config.T1_4_ADJOINT_K, lam=config.T1_4_ADJOINT_LAM)
+        params = AdjointParams(K=args.adjoint_K, lam=args.adjoint_lam)
         op = AdvectionDiffusionOperator.from_data(params, WindField.load(), om).factorize()
         models["adjoint"] = LbmAdjointModel(op)
         setup["adjoint_seconds"] = time.perf_counter() - t0
         setup["adjoint_n_free"] = op.n_free
     print(f"[setup] filters {filters}, sources {sources}, seeds {args.n_seeds}, steps {args.n_steps}; mode {args.mode}; "
           f"likelihood {args.likelihood}" + (f" (r = {args.nb_r:g})" if args.likelihood == "negbin" else "") + "; "
-          f"calibration match {cal_match}; setup {time.perf_counter() - t_start:.1f} s", flush=True)
+          f"adjoint K {args.adjoint_K:g} / lambda {args.adjoint_lam:g}; calibration match {cal_match}; setup {time.perf_counter() - t_start:.1f} s", flush=True)
 
     runs: dict[str, dict[int, list[dict]]] = {f: {} for f in filters}
     meas: dict[str, dict] = {}
@@ -748,7 +754,8 @@ def main(argv: list[str] | None = None) -> dict:
         curves[f] = None if c is None else c.tolist()
     truth_label = (f"frame {config.T1_4_FRAME_INDEX}" if args.mode == "F"
                    else f"mode T frames {truth_info['first_frame']}-{truth_info['last_frame']}")
-    make_figure(agg, runs, sources, unobs, args.fig, truth_label=truth_label, likelihood_label=nb_label)
+    make_figure(agg, runs, sources, unobs, args.fig, truth_label=truth_label, likelihood_label=nb_label,
+                adjoint_label=f"K {args.adjoint_K:g} / lambda {args.adjoint_lam:g}")
     final_table: str | None = None
     final_verd: dict | None = None
     if baseline is not None:
@@ -769,7 +776,7 @@ def main(argv: list[str] | None = None) -> dict:
         "filters": {f: {"model": FILTER_MODEL[f], "eps_mix": config.T1_4_FILTER_EPS[f], "label": FILTER_LABEL[f]} for f in filters},
         "analytic_params": {"wind_mode": "global", "U": config.T1_4_ANALYTIC_U, "sigma_v": config.T1_4_ANALYTIC_SIGMA_V,
                             "calibration_chosen": analytic_chosen, "matches_calibration": cal_match["analytic"]},
-        "adjoint_params": {"K": config.T1_4_ADJOINT_K, "lam": config.T1_4_ADJOINT_LAM, "wind_band": None,
+        "adjoint_params": {"K": args.adjoint_K, "lam": args.adjoint_lam, "wind_band": None,
                            "calibration_chosen": adjoint_chosen, "matches_calibration": cal_match["adjoint"], **setup},
         "n_seeds": args.n_seeds, "n_steps": args.n_steps, "n_drones": config.PF_ADJ_N_DRONES, "sources": sources,
         "source_types": {str(s): source_type(s) for s in sources},
