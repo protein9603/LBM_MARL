@@ -14,8 +14,9 @@ validate_t1_4 run: it is marked stale (and fails) when its 'created' stamp is ol
 G2 (plan S2, D9-4): T2-1 random-policy safety (1 and 2 drones, validate_env*.json), T2-2 determinism (checked live on
 tiny synthetic-seed episodes of the real scene), T2-3 step time <= 20 ms and the GMM-Infotaxis decision time within the
 5-10x budget, T2-4 baseline ordering GMM-Infotaxis >= greedy-MAP >= lawnmower >= random on the preliminary batch
-(cache/eval/<tag>/summary.json): success rate on the 12 observable sources, with the censored success-step median and the
-final-error median as tie-breakers; a batch where no method reaches G2_MIN_SUCCESS_RATE is flagged degenerate.
+(cache/eval/<tag>/summary.json): success rate (primary criterion ENV_SUCCESS_*) on the 12 observable sources, with the censored
+success-step median and the final-error median as secondary orderings; a batch where no method reaches G2_MIN_SUCCESS_RATE is
+flagged degenerate; the verification oracle (perfect search) must reach G2_ORACLE_MIN_SUCCESS_RATE.
 """
 from __future__ import annotations
 
@@ -178,6 +179,12 @@ def g2(eval_tag: str = "t2_4_prelim") -> dict:
         items["T2-3 GMM-Infotaxis decision-step multiple within 10x"] = {
             "pass": bool(all(m is not None and m <= 10.0 for m in mult.values())), "multiple_of_env_step": mult,
             "episode_wall_s": ifx, "criterion": "(episode wall / 300) / env step <= 10 (plan target 5-10x)"}
+        orc = cfg.get("oracle_loiter (1)", {}).get("all_observable")
+        items["T2-4 verification oracle (perfect search) reaches the primary criterion"] = {
+            "pass": bool(orc and orc["success_rate"] >= config.G2_ORACLE_MIN_SUCCESS_RATE),
+            "success_rate": orc and orc["success_rate"], "success_strict_rate": orc and orc["success_strict_rate"],
+            "n_episodes": orc and orc["n"],
+            "criterion": f"oracle_loiter (flies to the plume peak and loiters; privileged information, never a competing method) success >= {config.G2_ORACLE_MIN_SUCCESS_RATE:.0%} on the 12 observable sources: the environment / PF / success test can succeed once the search problem is removed"}
         order = ["gmm_infotaxis", "greedy_map", "lawnmower", "random"]
         for n in (1, 2):
             rows = {m: cfg.get(f"{m} ({n})", {}).get("all_observable") for m in order}
@@ -194,6 +201,8 @@ def g2(eval_tag: str = "t2_4_prelim") -> dict:
                 "pass": bool(ord_rate and not degenerate), "success_rate": rate, "censored_step_median": cens, "final_error_median_m": err,
                 "order_by_success_rate_ok": bool(ord_rate), "order_by_final_error_ok": bool(ord_err), "degenerate_no_discrimination": bool(degenerate),
                 "n_episodes": {m: rows[m]["n"] for m in order},
+                "success_rate_by_start_type": {st: {m: (summ.get("aggregates_by_start_type", {}).get(st, {}).get(f"{m} ({n})", {}).get("all_observable") or {}).get("success_rate") for m in order} for st in ("plume", "random")},
+                "success_strict_rate": {m: rows[m]["success_strict_rate"] for m in order},
                 "criterion": f"success rate GMM-Infotaxis >= greedy-MAP >= lawnmower >= random on the 12 observable sources, max rate >= {config.G2_MIN_SUCCESS_RATE:.0%}"}
     else:
         items["T2-4 baseline ordering"] = {"pass": False, "note": f"cache/eval/{eval_tag}/summary.json missing"}

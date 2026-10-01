@@ -89,7 +89,7 @@ class MultiDroneEnv(SourceLocEnv):
 
     def _info(self, **extra: Any) -> dict[str, Any]:
         info = {"source": self.source, "truth_xy": self.truth_xy.copy(), "frame": self.frame_meas,
-                "scale": self.scale, "reflected": self.reflected, "t": self.t, "drone_xy": self.xys.copy(),
+                "scale": self.scale, "reflected": self.reflected, "t": self.t, "drone_xy": self.xys.copy(), "start_type": self.start_type,
                 "action_mask": self.action_masks(), "map_error_m": self._map_error(), "entropy": self.h_prev,
                 "top_sigma_m": self.gmm.top_sigma(), "n_drones": self.n_drones}
         info.update(extra)
@@ -108,6 +108,7 @@ class MultiDroneEnv(SourceLocEnv):
                 opt["start_xy"] = arr[0]
         super().reset(seed=seed, options=opt)             # drone 0, PF, GMM: identical to SourceLocEnv
         xys = [self.xy.copy()]
+        start_type0 = self.start_type                     # team start type = the type of drone 0 (the draw shared with the 1-drone episode)
         for i in range(1, self.n_drones):
             if starts is not None:
                 p = starts[i]
@@ -124,6 +125,7 @@ class MultiDroneEnv(SourceLocEnv):
                     raise RuntimeError(f"no start >= {self.min_separation} m from the other drones found")
             xys.append(np.asarray(p, dtype=np.float64))
         self.xys = np.vstack(xys)
+        self.start_type = start_type0
         self._recents = [[] for _ in range(self.n_drones)]
         self._since_det = np.zeros(self.n_drones, dtype=np.int64)
         self._last_count_norm = np.zeros(self.n_drones)
@@ -171,8 +173,10 @@ class MultiDroneEnv(SourceLocEnv):
             self._refresh_gmm()
         t_gmm = time.perf_counter() - t0
         err = self._map_error()
-        success = bool(gmm_refreshed and self.gmm.top_sigma() < config.SUCCESS_SIGMA_M and err < config.SUCCESS_ERROR_M)
-        terminated = success or exited
+        sigma = self.gmm.top_sigma()
+        success = bool(gmm_refreshed and sigma < self.success_sigma and err < self.success_error)
+        strict = bool(gmm_refreshed and sigma < config.SUCCESS_SIGMA_M and err < config.SUCCESS_ERROR_M)
+        terminated = (success and self.terminate_on_success) or exited
         truncated = (not terminated) and self.t >= self.max_steps
         reward = config.ENV_REWARD_TIME + config.ENV_REWARD_INFO * gain
         if exited:
@@ -186,6 +190,6 @@ class MultiDroneEnv(SourceLocEnv):
         t_obs = time.perf_counter() - t0
         self._swap_in(0)
         self.last_timing = {"pf_s": t_pf, "gmm_s": t_gmm, "obs_s": t_obs, "total_s": time.perf_counter() - t_all}
-        info = self._info(success=success, y=ys, density=dens, applied=applied, exited=exited, info_gain=gain,
+        info = self._info(success=success, success_strict=strict, y=ys, density=dens, applied=applied, exited=exited, info_gain=gain,
                           gmm_refreshed=gmm_refreshed)
         return obs, float(reward), terminated, truncated, info

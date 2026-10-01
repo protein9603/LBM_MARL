@@ -32,6 +32,7 @@ from scipy.special import gammaln, logsumexp
 from scipy.stats import poisson as _poisson
 
 from srcloc_env import config
+from srcloc_env.baselines.planning import GeodesicField
 from srcloc_env.env.drone import ACTION_STAY
 from srcloc_env.scripts.validate_pf_adjoint import lawnmower_path
 
@@ -53,6 +54,51 @@ def _landing(env, xy: np.ndarray) -> np.ndarray:
     land = env.kin.landing_points(xy)[0]
     mask = env.kin.action_mask(xy)
     return np.where(mask[:, None], land, xy[None, :])
+
+
+_GEO_CACHE: dict = {}
+
+
+def _geodesic(env) -> GeodesicField:
+    """One GeodesicField per scene (obstacle raster) and flight height, built lazily and cached per process."""
+    key = (id(env.scene.obstacles), float(env.z))
+    if key not in _GEO_CACHE:
+        _GEO_CACHE[key] = GeodesicField(env.scene.obstacles, env.z)
+    return _GEO_CACHE[key]
+
+
+class _TargetFollower:
+    """Shared geodesic target following: the shortest-path field to the target is recomputed when the target has moved by
+    more than ``retarget_m``; the action is the allowed one with the smallest field value at its landing point."""
+
+    def __init__(self, retarget_m: float = 20.0) -> None:
+        self.retarget_m = float(retarget_m)
+        self._target = None
+        self._field = None
+
+    def reset_target(self) -> None:
+        self._target, self._field = None, None
+
+    def landing_values(self, env, target: np.ndarray, land: np.ndarray) -> np.ndarray:
+        """Geodesic values (distance-to-go [m]) of landing points (k, 2) for the current target."""
+        geo = _geodesic(env)
+        target = np.asarray(target, dtype=float)
+        if self._target is None or np.hypot(*(target - self._target)) > self.retarget_m:
+            self._target, self._field = target.copy(), geo.field(target)
+        return geo.value(self._field, land)
+
+    def step_towards(self, env, xy: np.ndarray, target: np.ndarray) -> int:
+        geo = _geodesic(env)
+        target = np.asarray(target, dtype=float)
+        if self._target is None or np.hypot(*(target - self._target)) > self.retarget_m:
+            self._target, self._field = target.copy(), geo.field(target)
+        if np.hypot(*(xy - target)) < 0.5 * env.kin.step_m:
+            return ACTION_STAY
+        land = _landing(env, xy)
+        mask = env.kin.action_mask(xy)
+        val = geo.value(self._field, land)
+        val = np.where(mask, val, np.inf)
+        return int(np.argmin(val))
 
 
 class Policy:
@@ -109,21 +155,22 @@ class LawnmowerPolicy(Policy):
 
 
 class GreedyMapPolicy(Policy):
+    """Every drone follows the shortest free path (around buildings, GeodesicField) to the mean of the top GMM component of
+    the shared belief (D9-4: the first version took the nearest landing point in Euclidean distance and was trapped by the
+    first building between drone and target)."""
     name = "greedy_map"
+
+    def __init__(self) -> None:
+        self._followers: list[_TargetFollower] = []
+
+    def reset(self, env, info: dict) -> None:
+        self._followers = [_TargetFollower() for _ in range(_n_drones(env))]
 
     def act(self, env, obs, info) -> np.ndarray:
         target = env.gmm.means[0]
-        acts = []
-        for xy in _positions(env):
-            if np.hypot(*(xy - target)) < 0.5 * env.kin.step_m:
-                acts.append(ACTION_STAY)
-                continue
-            land = _landing(env, xy)
-            mask = env.kin.action_mask(xy)
-            d = np.hypot(*(land - target).T)
-            d[~mask] = np.inf
-            acts.append(int(np.argmin(d)))
-        return np.array(acts, dtype=np.int64)
+        if len(self._followers) != _n_drones(env):
+            self._followers = [_TargetFollower() for _ in range(_n_drones(env))]
+        return np.array([f.step_towards(env, xy, target) for f, xy in zip(self._followers, _positions(env))], dtype=np.int64)
 
 
 def _log_pmf(y: float, lam: np.ndarray, likelihood: str, r: float) -> np.ndarray:
@@ -146,17 +193,22 @@ def _hist_entropy(xy: np.ndarray, w: np.ndarray, cell: float, prior_x, prior_y) 
 
 
 class GmmInfotaxisPolicy(Policy):
-    """One-step expected-entropy-reduction policy on the shared PF belief (module docstring)."""
+    """One-step expected-entropy-reduction policy on the shared PF belief (module docstring).  D9-4: when several allowed
+    actions are within ``tie_tol`` nats of the best expected entropy (flat information, e.g. no detection yet) the drone
+    follows the shortest free path to the belief's top component (greedy tie-break) instead of an arbitrary pick."""
     name = "gmm_infotaxis"
 
     def __init__(self, n_sub: int = config.INFOTAXIS_N_SUB, n_samples: int = config.INFOTAXIS_N_SAMPLES,
-                 cell: float = config.PF_ENTROPY_CELL_M, seed: int = 0) -> None:
+                 cell: float = config.PF_ENTROPY_CELL_M, seed: int = 0, tie_tol: float = config.INFOTAXIS_TIE_TOL_NATS) -> None:
         self.n_sub, self.n_samples, self.cell = int(n_sub), int(n_samples), float(cell)
+        self.tie_tol = float(tie_tol)
         self.rng = np.random.default_rng(seed)
         self.last_scores: list[np.ndarray] = []
+        self._followers: list[_TargetFollower] = []
 
     def reset(self, env, info: dict) -> None:
         self.rng = np.random.default_rng([int(info["source"]), int(info["frame"]), 11])
+        self._followers = [_TargetFollower() for _ in range(_n_drones(env))]
 
     def _subsample(self, env) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         pf = env.pf
@@ -224,7 +276,9 @@ class GmmInfotaxisPolicy(Policy):
     def act(self, env, obs, info) -> np.ndarray:
         xy_sub, w_sub, logv_sub = self._subsample(env)
         acts, self.last_scores = [], []
-        for xy in _positions(env):
+        if len(self._followers) != _n_drones(env):
+            self._followers = [_TargetFollower() for _ in range(_n_drones(env))]
+        for i_drone, xy in enumerate(_positions(env)):
             crn = self._draw_common(env, xy_sub, w_sub, logv_sub)          # shared by all actions of this drone
             mask = env.kin.action_mask(xy)
             land = _landing(env, xy)
@@ -233,6 +287,10 @@ class GmmInfotaxisPolicy(Policy):
             for a in np.flatnonzero(mask):
                 scores[a], ybar[a] = self._expected_entropy(env, xy_sub, w_sub, logv_sub, land[a], crn)
             a_best = int(np.argmin(scores))                                 # minimal expected posterior entropy
+            near = np.flatnonzero(mask & (scores <= scores.min() + self.tie_tol))
+            if near.size > 1:                                               # flat information (no signal): follow the belief (greedy tie-break, D9-4)
+                vals = self._followers[i_drone].landing_values(env, env.gmm.means[0], land[near])
+                a_best = int(near[int(np.argmin(vals))])
             acts.append(a_best)
             self.last_scores.append(scores)
             if _n_drones(env) > 1:
@@ -240,10 +298,64 @@ class GmmInfotaxisPolicy(Policy):
         return np.array(acts, dtype=np.int64)
 
 
+class OracleLoiterPolicy(Policy):
+    """VERIFICATION ONLY (plan rule 3: other methods only where code verification needs them): every drone follows the
+    shortest free path to the PLUME PEAK of the episode's source (privileged information: the smoothed 15 m density maximum
+    of the truth slab within 200 m of the source - the plume rises and drifts downwind, so the concentration at the source
+    itself is ~0) and loiters there (random allowed action that stays within ``loiter_m`` of the peak).  It bounds what the
+    shared PF / sensor / success test achieves when the search problem is removed; it is never reported as a method."""
+    name = "oracle_loiter"
+
+    def __init__(self, loiter_m: float = 25.0, seed: int = 0, radius_m: float = 200.0) -> None:
+        self.loiter_m, self.radius_m = float(loiter_m), float(radius_m)
+        self.rng = np.random.default_rng(seed)
+        self.peak = None
+        self._followers: list[_TargetFollower] = []
+
+    def reset(self, env, info: dict) -> None:
+        self.rng = np.random.default_rng([int(info["source"]), int(info["frame"]), 13])
+        self._followers = [_TargetFollower(retarget_m=1e9) for _ in range(_n_drones(env))]
+        self.peak = self._plume_peak(env)
+
+    def _plume_peak(self, env) -> np.ndarray:
+        truth = np.asarray(env.truth_xy, dtype=float)
+        try:
+            from scipy.ndimage import gaussian_filter
+            sf = env.scene.backend.slab(env.frame0)
+            g = sf.grid
+            dens = sf.density[list(sf.sources).index(env.source), sf.z_index(env.z)].astype(float)
+            if env.scene.reflected:
+                return truth                                              # not used in evaluation; keep it simple
+            sm = gaussian_filter(dens, 2.0)
+            xx, yy = np.meshgrid(g.x_centres, g.y_centres)
+            sm[np.hypot(xx - truth[0], yy - truth[1]) > self.radius_m] = 0.0
+            if sm.max() <= 0.0:
+                return truth
+            j = int(np.argmax(sm))
+            return np.array([xx.flat[j], yy.flat[j]])
+        except AttributeError:
+            return truth                                                  # backend without slabs (unit tests)
+
+    def act(self, env, obs, info) -> np.ndarray:
+        acts = []
+        for f, xy in zip(self._followers, _positions(env)):
+            land = _landing(env, xy)
+            mask = env.kin.action_mask(xy)
+            d = np.hypot(*(land - self.peak).T)
+            if np.hypot(*(xy - self.peak)) > self.loiter_m:
+                acts.append(f.step_towards(env, xy, self.peak))
+            else:
+                ok = np.flatnonzero(mask & (d <= self.loiter_m))
+                acts.append(int(self.rng.choice(ok)) if ok.size else ACTION_STAY)
+        return np.array(acts, dtype=np.int64)
+
+
 POLICIES = {"random": RandomPolicy, "lawnmower": LawnmowerPolicy, "greedy_map": GreedyMapPolicy, "gmm_infotaxis": GmmInfotaxisPolicy}
+VERIFICATION_POLICIES = {"oracle_loiter": OracleLoiterPolicy}         # privileged-information bounds, excluded from the default method lists
 
 
 def make_policy(name: str, **kwargs: Any) -> Policy:
-    if name not in POLICIES:
-        raise ValueError(f"unknown policy {name!r}; choose from {list(POLICIES)}")
-    return POLICIES[name](**kwargs)
+    table = {**POLICIES, **VERIFICATION_POLICIES}
+    if name not in table:
+        raise ValueError(f"unknown policy {name!r}; choose from {list(table)}")
+    return table[name](**kwargs)

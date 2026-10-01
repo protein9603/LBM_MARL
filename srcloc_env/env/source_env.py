@@ -20,13 +20,14 @@ Observation (config.ENV_OBS_DIM = 56; plan 4.5):
 Reward (plan 4.5): ENV_REWARD_TIME + ENV_REWARD_INFO x (H_{t-1} - H_t) / H_0 + ENV_REWARD_EXIT x [domain exit]
     + terminal: success ENV_REWARD_SUCCESS; timeout -min(error, ENV_FAIL_ERROR_CAP_M) / ENV_FAIL_ERROR_SCALE_M.
     H = RBPF.entropy_xy (20 m cell weighted histogram), H_0 = entropy of the obstacle-aware prior.
-Termination: success = GMM top sigma < SUCCESS_SIGMA_M and |MAP - truth| < SUCCESS_ERROR_M (checked when the GMM is
+Termination: success = GMM top sigma < ENV_SUCCESS_SIGMA_M (30 m) and |MAP - truth| < ENV_SUCCESS_ERROR_M (50 m) (checked when the GMM is
     refreshed); truncation at ``max_steps`` (config.MAX_EPISODE_STEPS = 300); domain exit terminates (cannot happen
     through DroneKinematics, kept for safety).
 Reset (plan 4.5): source ~ ``sources`` (default config.TRAIN_SOURCES); Mode F frame ~ U{FRAME_RANGE_MODE_F} held for
     the episode (D8-2 decision), Mode T2 frame(t) = min(N_FILES - 1, start + t), start ~ U{FRAME_START_MODE_T2};
     scale ~ log-uniform SENSOR_SCALE_RANGE; drone start = free cell >= ENV_START_MIN_DIST_M from the source, with
-    probability ENV_START_DOWNWIND_FRAC downwind of the source's local 15 m wind; y-reflection with probability
+    probability ENV_START_PLUME_FRAC inside the detectable plume region of the episode's source (expected counts >= the Currie
+    threshold at the start, distance >= ENV_START_MIN_DIST_M; info['start_type'] = 'plume' or 'random'); y-reflection with probability
     ``reflect_prob`` (needs ``scene_reflected``, Scene.reflected()); the other 12 sources are removed (single-source
     density query).  All randomness comes from gymnasium's ``self.np_random`` (seed -> reproducible episode).
 The PF likelihood uses the environment detector's (background, T) and a kappa grid centred on its k0, so a custom
@@ -143,11 +144,12 @@ class SourceLocEnv(gym.Env):
                  t2_files_per_step: float = config.T1_4_MODE_T2_FILES_PER_STEP,
                  scale_range: tuple[float, float] = config.SENSOR_SCALE_RANGE,
                  start_min_dist: float = config.ENV_START_MIN_DIST_M,
-                 start_downwind_frac: float = config.ENV_START_DOWNWIND_FRAC,
+                 start_plume_frac: float = config.ENV_START_PLUME_FRAC,
                  prior_x: tuple[float, float] = config.PF_PRIOR_X, prior_y: tuple[float, float] = config.PF_PRIOR_Y,
                  likelihood: str | None = None, nb_r: float = config.PF_NB_DISPERSION_R,
                  eps_mix: float = config.PF_EPS_MIX, z: float = config.DRONE_Z,
-                 n_files: int = config.N_FILES) -> None:
+                 n_files: int = config.N_FILES, success_sigma: float = config.ENV_SUCCESS_SIGMA_M,
+                 success_error: float = config.ENV_SUCCESS_ERROR_M, terminate_on_success: bool = True) -> None:
         super().__init__()
         if truth_mode not in ENV_MODES:
             raise ValueError(f"truth_mode must be one of {ENV_MODES}, got {truth_mode!r}")
@@ -178,11 +180,14 @@ class SourceLocEnv(gym.Env):
         self.t2_files_per_step = float(t2_files_per_step)
         self.scale_range = (float(scale_range[0]), float(scale_range[1]))
         self.start_min_dist = float(start_min_dist)
-        self.start_downwind_frac = float(start_downwind_frac)
+        self.start_plume_frac = float(start_plume_frac)
+        self.start_type = "random"
         self.prior_x, self.prior_y = (float(prior_x[0]), float(prior_x[1])), (float(prior_y[0]), float(prior_y[1]))
         self.likelihood, self.nb_r, self.eps_mix = likelihood, float(nb_r), float(eps_mix)
         self.z = float(z)
         self.n_files = int(n_files)
+        self.success_sigma, self.success_error = float(success_sigma), float(success_error)
+        self.terminate_on_success = bool(terminate_on_success)
         self.n_recent = int(config.ENV_N_RECENT)
         self.obs_dim = int(config.ENV_OBS_DIM)
         self.observation_space = spaces.Box(-config.ENV_OBS_BOUND, config.ENV_OBS_BOUND, shape=(self.obs_dim,),
@@ -226,25 +231,46 @@ class SourceLocEnv(gym.Env):
         return self.kin.action_mask(self.xy)
 
     def _sample_start(self, rng: np.random.Generator) -> np.ndarray:
-        """Free point in the PF prior box at >= start_min_dist from the source; with probability
-        start_downwind_frac it must also lie downwind of the source's 15 m wind (skipped when the wind at the
-        source is < ENV_START_WIND_MIN m/s, e.g. inside a courtyard)."""
+        """Free point in the PF prior box at >= start_min_dist from the source.  With probability start_plume_frac the point
+        must also lie in the detectable plume region of the episode's source: the expected counts (k0 scale n + b) T of the
+        truth density at the episode's frame reach ENV_START_PLUME_MIN_COUNTS_FACTOR x the Currie threshold x T.  When that
+        region has no admissible cell (weak sources) the start falls back to 'random'.  self.start_type records the outcome."""
         sx, sy = self.truth_xy
-        want_downwind = rng.random() < self.start_downwind_frac
-        uv = self.scene.wind.uv_at(np.array([sx, sy]), self.z)[0]
-        if np.hypot(uv[0], uv[1]) < config.ENV_START_WIND_MIN:
-            want_downwind = False
+        want_plume = bool(rng.random() < self.start_plume_frac)
         om = self.scene.obstacles
-        for _ in range(config.ENV_START_MAX_BATCHES):
-            cand = np.column_stack([rng.uniform(self.prior_x[0], self.prior_x[1], config.ENV_START_BATCH),
-                                    rng.uniform(self.prior_y[0], self.prior_y[1], config.ENV_START_BATCH)])
-            d = cand - np.array([sx, sy])
-            ok = (np.hypot(d[:, 0], d[:, 1]) >= self.start_min_dist) & om.is_free(cand, self.z)
-            if want_downwind:
-                ok &= (d @ uv) > 0.0
-            idx = np.flatnonzero(ok)
-            if idx.size:
-                return cand[idx[0]].copy()
+        thr = config.ENV_START_PLUME_MIN_COUNTS_FACTOR * self.det.detection_threshold_cps() * self.det.T
+        if want_plume and hasattr(self.scene.backend, "slab") and not self.scene.reflected:
+            # direct draw from the detectable cells of the episode's slab (rejection from a uniform box rarely hits a thin plume)
+            sf = self.scene.backend.slab(self.frame_at(0))
+            g = sf.grid
+            dens = sf.density[list(sf.sources).index(self.source), sf.z_index(self.z)].astype(np.float64)
+            xx, yy = np.meshgrid(g.x_centres, g.y_centres)
+            okc = ((self.det.expected_counts(dens, self.scale) >= thr) & (np.hypot(xx - sx, yy - sy) >= self.start_min_dist)
+                   & (xx >= self.prior_x[0]) & (xx <= self.prior_x[1]) & (yy >= self.prior_y[0]) & (yy <= self.prior_y[1]))
+            cells = np.flatnonzero(okc.ravel())
+            for _ in range(config.ENV_START_MAX_BATCHES):
+                if cells.size == 0:
+                    break
+                j = int(cells[int(rng.integers(cells.size))])
+                cand = np.array([xx.flat[j] + rng.uniform(-0.5, 0.5) * g.res, yy.flat[j] + rng.uniform(-0.5, 0.5) * g.res])
+                if om.is_free(cand, self.z):
+                    self.start_type = "plume"
+                    return cand
+        for attempt in range(2 if want_plume else 1):
+            plume = want_plume and attempt == 0
+            for _ in range(config.ENV_START_MAX_BATCHES):
+                cand = np.column_stack([rng.uniform(self.prior_x[0], self.prior_x[1], config.ENV_START_BATCH),
+                                        rng.uniform(self.prior_y[0], self.prior_y[1], config.ENV_START_BATCH)])
+                d = cand - np.array([sx, sy])
+                ok = (np.hypot(d[:, 0], d[:, 1]) >= self.start_min_dist) & om.is_free(cand, self.z)
+                if plume and ok.any():
+                    sel = np.flatnonzero(ok)
+                    dens = self.scene.backend.density([self.source], cand[sel], self.frame_at(0), self.z, 1.0, flip_y=self.scene.reflected)
+                    ok[sel] = self.det.expected_counts(dens, self.scale) >= thr
+                idx = np.flatnonzero(ok)
+                if idx.size:
+                    self.start_type = "plume" if plume else "random"
+                    return cand[idx[0]].copy()
         raise RuntimeError(f"no free start >= {self.start_min_dist} m from source {self.source} found")
 
     def _measure(self) -> tuple[int, float]:
@@ -287,7 +313,7 @@ class SourceLocEnv(gym.Env):
 
     def _info(self, **extra: Any) -> dict[str, Any]:
         info = {"source": self.source, "truth_xy": self.truth_xy.copy(), "frame": self.frame_meas,   # frame of info["y"] (reset: of the first measurement)
-                "scale": self.scale, "reflected": self.reflected, "t": self.t, "drone_xy": self.xy.copy(),
+                "scale": self.scale, "reflected": self.reflected, "t": self.t, "drone_xy": self.xy.copy(), "start_type": self.start_type,
                 "action_mask": self.action_mask(), "map_error_m": self._map_error(), "entropy": self.h_prev,
                 "top_sigma_m": self.gmm.top_sigma()}
         info.update(extra)
@@ -318,6 +344,8 @@ class SourceLocEnv(gym.Env):
         self.scale = float(opt.get("scale", Detector.sample_scale(rng, self.scale_range[0], self.scale_range[1])))
         self.t = 0
         self.frame_meas = self.frame_at(0)
+        if "start_xy" in opt:
+            self.start_type = "given"
         self.xy = (np.asarray(opt["start_xy"], dtype=np.float64).copy() if "start_xy" in opt
                    else self._sample_start(rng))
         if not self.scene.obstacles.is_free(self.xy, self.z):
@@ -368,8 +396,10 @@ class SourceLocEnv(gym.Env):
             self._refresh_gmm()
         t_gmm = time.perf_counter() - t0
         err = self._map_error()
-        success = bool(gmm_refreshed and self.gmm.top_sigma() < config.SUCCESS_SIGMA_M and err < config.SUCCESS_ERROR_M)
-        terminated = success or exited
+        sigma = self.gmm.top_sigma()
+        success = bool(gmm_refreshed and sigma < self.success_sigma and err < self.success_error)
+        strict = bool(gmm_refreshed and sigma < config.SUCCESS_SIGMA_M and err < config.SUCCESS_ERROR_M)
+        terminated = (success and self.terminate_on_success) or exited
         truncated = (not terminated) and self.t >= self.max_steps
         reward = config.ENV_REWARD_TIME + config.ENV_REWARD_INFO * gain
         if exited:
@@ -382,6 +412,6 @@ class SourceLocEnv(gym.Env):
         obs = self._observation()
         t_obs = time.perf_counter() - t0
         self.last_timing = {"pf_s": t_pf, "gmm_s": t_gmm, "obs_s": t_obs, "total_s": time.perf_counter() - t_all}
-        info = self._info(success=success, y=y, density=dens, applied=applied, exited=exited, info_gain=gain,
+        info = self._info(success=success, success_strict=strict, y=y, density=dens, applied=applied, exited=exited, info_gain=gain,
                           gmm_refreshed=gmm_refreshed)   # timing stays in self.last_timing (info must be seed-deterministic, env_checker)
         return obs, float(reward), terminated, truncated, info

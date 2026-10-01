@@ -26,19 +26,20 @@ from typing import Any
 import numpy as np
 
 from srcloc_env import config
-from srcloc_env.baselines.policies import POLICIES, make_policy
+from srcloc_env.baselines.policies import POLICIES, VERIFICATION_POLICIES, make_policy
 from srcloc_env.env.multi_agent import MultiDroneEnv
 from srcloc_env.env.source_env import Scene, SourceLocEnv
 from srcloc_env.eval.episodes import EpisodeSpec, load_episode_list, make_episode_list, save_episode_list
 from srcloc_env.eval.metrics import aggregate, paired_differences, table2_markdown
 
-RECORD_FIELDS = ["method", "n_drones", "episode_id", "seed", "source", "frame", "scale", "mode", "success", "steps",
+RECORD_FIELDS = ["method", "n_drones", "episode_id", "seed", "source", "frame", "scale", "mode", "start_type", "success", "steps",
+                 "success_strict", "steps_strict", "min_error_m",
                  "final_error_m", "first_detection_step", "declared_step", "declared_error_m", "path_length_m", "n_masked",
                  "entropy_final", "top_sigma_final_m", "wall_s", "step_ms_median"]
 
 
 def make_env(scene: Scene, n_drones: int, mode: str) -> SourceLocEnv:
-    kw = dict(sources=config.ALL_SOURCES, truth_mode=mode, reflect_prob=0.0)
+    kw = dict(sources=config.ALL_SOURCES, truth_mode=mode, reflect_prob=0.0, terminate_on_success=not config.EVAL_NO_EARLY_STOP)
     return MultiDroneEnv(scene, n_drones=n_drones, **kw) if n_drones > 1 else SourceLocEnv(scene, **kw)
 
 
@@ -52,6 +53,9 @@ def run_episode(env: SourceLocEnv, policy, spec: EpisodeSpec, log_steps: bool = 
     path_len = 0.0
     n_masked = 0
     first_det = declared_step = None
+    first_ok = first_strict = None
+    min_err = float("inf")
+    start_type = info.get("start_type", "")
     declared_err = None
     step_ms = []
     log: dict[str, list] = {k: [] for k in ("drone_xy", "y", "action", "applied", "gmm_w", "gmm_mu", "gmm_cov", "gmm_mask",
@@ -70,7 +74,12 @@ def run_episode(env: SourceLocEnv, policy, spec: EpisodeSpec, log_steps: bool = 
         ys = info["y"] if n > 1 else [info["y"]]
         if first_det is None and any(bool(env.det.is_detection(y)) for y in ys):
             first_det = info["t"]
-        if declared_step is None and info["top_sigma_m"] < config.SUCCESS_SIGMA_M:
+        if first_ok is None and info["success"]:
+            first_ok = info["t"]
+        if first_strict is None and info["success_strict"]:
+            first_strict = info["t"]
+        min_err = min(min_err, float(info["map_error_m"]))
+        if declared_step is None and info["top_sigma_m"] < env.success_sigma:
             declared_step, declared_err = info["t"], float(info["map_error_m"])
         if log is not None:
             g = env.gmm
@@ -79,7 +88,9 @@ def run_episode(env: SourceLocEnv, policy, spec: EpisodeSpec, log_steps: bool = 
             log["gmm_cov"].append(g.covs.copy()); log["gmm_mask"].append(g.mask.copy()); log["map_xy"].append(env.pf.map_estimate().copy())
             log["entropy"].append(env.h_prev); log["top_sigma"].append(g.top_sigma()); log["map_error"].append(float(info["map_error_m"]))
     rec = {"method": policy.name, "n_drones": n, "episode_id": spec.episode_id, "seed": spec.seed, "source": spec.source,
-           "frame": spec.frame, "scale": spec.scale, "mode": spec.mode, "success": bool(info["success"]), "steps": int(info["t"]),
+           "frame": spec.frame, "scale": spec.scale, "mode": spec.mode, "start_type": start_type, "success": first_ok is not None,
+           "steps": int(first_ok if first_ok is not None else info["t"]), "success_strict": first_strict is not None,
+           "steps_strict": int(first_strict if first_strict is not None else info["t"]), "min_error_m": min_err,
            "final_error_m": float(info["map_error_m"]), "first_detection_step": first_det, "declared_step": declared_step,
            "declared_error_m": declared_err, "path_length_m": path_len, "n_masked": n_masked, "entropy_final": float(env.h_prev),
            "top_sigma_final_m": float(info["top_sigma_m"]), "wall_s": time.perf_counter() - t_wall,
@@ -87,7 +98,7 @@ def run_episode(env: SourceLocEnv, policy, spec: EpisodeSpec, log_steps: bool = 
     if log is not None:
         log = {k: np.asarray(v) for k, v in log.items()}
         log.update({"truth_xy": info["truth_xy"], "source": spec.source, "frame": spec.frame, "scale": spec.scale,
-                    "seed": spec.seed, "success": bool(info["success"]), "method": policy.name, "n_drones": n})
+                    "seed": spec.seed, "success": first_ok is not None, "method": policy.name, "n_drones": n, "start_type": start_type})
     return rec, log
 
 
@@ -131,7 +142,7 @@ def write_records(path: Path, recs: list[dict]) -> None:
 
 def main(argv: list[str] | None = None) -> dict:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--methods", nargs="+", default=list(POLICIES), choices=list(POLICIES))
+    ap.add_argument("--methods", nargs="+", default=list(POLICIES), choices=list(POLICIES) + list(VERIFICATION_POLICIES))
     ap.add_argument("--n-drones", type=int, nargs="+", default=[1, 2])
     ap.add_argument("--n-per-source", type=int, default=config.EVAL_PRELIM_EPISODES_PER_SOURCE)
     ap.add_argument("--sources", type=int, nargs="*", default=list(config.ALL_SOURCES))
@@ -180,6 +191,7 @@ def main(argv: list[str] | None = None) -> dict:
         m, n = rs[0]["method"], rs[0]["n_drones"]
         write_records(out_dir / f"records_{m}_{n}drones.csv", sorted(rs, key=lambda r: r["episode_id"]))
     agg = {label: aggregate(rs) for label, rs in by_cfg.items()}
+    agg_by_start = {st: {label: aggregate(rs, start_type=st) for label, rs in by_cfg.items()} for st in ("plume", "random")}
     first = args.methods[0]
     paired = {label: paired_differences(rs, by_cfg[f"{first} ({rs[0]['n_drones']})"])
               for label, rs in by_cfg.items() if f"{first} ({rs[0]['n_drones']})" in by_cfg and rs[0]["method"] != first}
@@ -188,11 +200,15 @@ def main(argv: list[str] | None = None) -> dict:
     table = table2_markdown(agg)
     summary = {"created": time.strftime("%Y-%m-%d %H:%M:%S"), "tag": args.tag, "mode": args.mode, "methods": args.methods,
                "n_drones": args.n_drones, "n_episodes": len(specs), "sources": sorted({s.source for s in specs}),
-               "aggregates": agg, "paired_vs_first_method": paired, "timing": timing, "table2_markdown": table,
+               "aggregates": agg, "aggregates_by_start_type": agg_by_start, "paired_vs_first_method": paired, "timing": timing, "table2_markdown": table,
+               "table2_markdown_by_start_type": {st: table2_markdown(a) for st, a in agg_by_start.items()},
                "total_seconds": total_s, "processes": args.processes}
     (out_dir / "summary.json").write_text(json.dumps(summary, indent=2, default=lambda o: o.item() if hasattr(o, "item") else str(o)),
                                           encoding="utf-8")
     print(table)
+    for st, a in agg_by_start.items():
+        print(f"--- start type: {st} ---")
+        print(table2_markdown(a, groups=("train", "holdout", "all_observable")))
     print(f"[eval] total {total_s:.0f} s; summary {out_dir / 'summary.json'}")
     return summary
 

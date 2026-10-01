@@ -272,3 +272,23 @@ def test_gmm_iters_and_warm_start_options(scene):
     assert np.array_equal(o1, o2)                                      # still deterministic
     with pytest.raises(ValueError):
         _env(scene, gmm_iters=0)
+
+
+def test_plume_start_rule(scene):
+    """D9-4: start_plume_frac = 1 puts the drone where the episode's source is detectable (expected counts >= Currie
+    threshold), >= start_min_dist from the source; frac 0 never reports 'plume'; a given start reports 'given'."""
+    env = _env(scene, start_plume_frac=1.0)
+    thr = config.ENV_START_PLUME_MIN_COUNTS_FACTOR * env.det.detection_threshold_cps() * env.det.T
+    n_plume = 0
+    for seed in range(8):
+        _, info = env.reset(seed=seed, options={"source": 1, "scale": 3.0})
+        dens = scene.backend.density([1], info["drone_xy"], info["frame"], config.DRONE_Z, 1.0)
+        d_src = np.hypot(*(info["drone_xy"] - info["truth_xy"]))
+        assert d_src >= 50.0
+        if info["start_type"] == "plume":
+            n_plume += 1
+            assert env.det.expected_counts(dens, 3.0)[0] >= thr
+    assert n_plume >= 6
+    env0 = _env(scene, start_plume_frac=0.0)
+    assert all(env0.reset(seed=s)[1]["start_type"] == "random" for s in range(4))
+    assert env0.reset(seed=1, options={"start_xy": (20.0, -60.0)})[1]["start_type"] == "given"

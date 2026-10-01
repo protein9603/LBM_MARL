@@ -43,7 +43,7 @@ def _rollout(env, policy, seed, n_steps, options=None):
 
 
 def test_random_policy_respects_masks_and_is_seeded(scene):
-    env = MultiDroneEnv(scene, n_drones=2, max_steps=30, **KW)
+    env = MultiDroneEnv(scene, n_drones=2, max_steps=30, terminate_on_success=False, **KW)
     a1, _ = _rollout(env, RandomPolicy(), seed=3, n_steps=30)
     a2, _ = _rollout(env, RandomPolicy(), seed=3, n_steps=30)
     assert all(np.array_equal(x, y) for x, y in zip(a1, a2)) and len(a1) == 30
@@ -71,7 +71,7 @@ def test_greedy_map_moves_towards_top_component(scene):
     for _ in range(15):
         a = pol.act(env, obs, info)
         obs, r, term, trunc, info = env.step(int(a[0]))
-    assert np.hypot(*(env.xy - target)) < d0 - 50
+    assert np.hypot(*(env.xy - target)) < d0 - 40                     # geodesic route around the block (30 m x 18 m) costs a few steps
 
 
 def test_hist_entropy_matches_pf_entropy_definition(scene):
@@ -83,16 +83,25 @@ def test_hist_entropy_matches_pf_entropy_definition(scene):
 
 
 def test_infotaxis_scores_every_allowed_action_and_is_deterministic(scene):
-    env = MultiDroneEnv(scene, n_drones=2, max_steps=10, **KW)
-    pol = GmmInfotaxisPolicy(n_sub=120, n_samples=4)
-    a1, infos = _rollout(env, pol, seed=8, n_steps=3)
-    scores = pol.last_scores
+    def run():
+        env = MultiDroneEnv(scene, n_drones=2, max_steps=10, **KW)
+        pol = GmmInfotaxisPolicy(n_sub=120, n_samples=4)
+        obs, info = env.reset(seed=8)
+        pol.reset(env, info)
+        acts = []
+        for _ in range(2):
+            a = pol.act(env, obs, info)
+            acts.append(a.copy())
+            obs, r, term, trunc, info = env.step(a)
+        masks = env.action_masks()                                    # the state the next decision is taken in
+        a = pol.act(env, obs, info)
+        acts.append(a.copy())
+        return acts, pol.last_scores, masks
+    a1, scores, masks = run()
     assert len(scores) == 2 and all(s.shape == (9,) for s in scores)
-    masks = env.action_masks()
     for i in range(2):
         assert np.all(np.isfinite(scores[i][masks[i]])) and np.all(np.isinf(scores[i][~masks[i]]))
-    pol2 = GmmInfotaxisPolicy(n_sub=120, n_samples=4)
-    a2, _ = _rollout(env, pol2, seed=8, n_steps=3)
+    a2, _, _ = run()
     assert all(np.array_equal(x, y) for x, y in zip(a1, a2))
 
 
@@ -127,12 +136,15 @@ def test_episode_list_roundtrip_and_pairing(tmp_path):
 
 def test_run_episode_record_and_step_log_single_and_multi(scene):
     spec = EpisodeSpec(episode_id=0, seed=9, source=1, frame=450, scale=1.2)
-    env1 = SourceLocEnv(scene, max_steps=12, **KW)
-    env2 = MultiDroneEnv(scene, n_drones=2, max_steps=12, **KW)
+    env1 = SourceLocEnv(scene, max_steps=12, terminate_on_success=False, **KW)
+    env2 = MultiDroneEnv(scene, n_drones=2, max_steps=12, terminate_on_success=False, **KW)
     rec1, log1 = run_episode(env1, make_policy("random"), spec, log_steps=True)
     rec2, log2 = run_episode(env2, make_policy("lawnmower"), spec, log_steps=True)
+    assert log1["drone_xy"].shape[0] == 12 and log2["drone_xy"].shape[0] == 12                  # no early stop: the full episode is logged
     for rec in (rec1, rec2):
-        assert rec["steps"] == 12 and rec["source"] == 1 and rec["frame"] == 450 and isinstance(rec["success"], bool)
+        assert 1 <= rec["steps"] <= 12 and rec["source"] == 1 and rec["frame"] == 450 and isinstance(rec["success"], bool)   # steps = first success step, else 12
+        assert isinstance(rec["success_strict"], bool) and rec["min_error_m"] <= rec["final_error_m"] + 1e-9 and rec["start_type"] in ("plume", "random")
+        assert (not rec["success"]) or rec["steps"] <= 12
         assert rec["path_length_m"] >= 0 and rec["n_masked"] >= 0 and np.isfinite(rec["final_error_m"])
     assert log1["drone_xy"].shape == (12, 1, 2) and log2["drone_xy"].shape == (12, 2, 2)
     assert log2["y"].shape == (12, 2) and log2["gmm_mu"].shape == (12, 3, 2) and log2["map_xy"].shape == (12, 2)
@@ -164,3 +176,37 @@ def test_metrics_wilson_bootstrap_aggregate_paired():
     parts = [set(GROUPS[g]) for g in ("train_open", "train_other", "holdout")]
     assert parts[0].isdisjoint(parts[1]) and parts[0].isdisjoint(parts[2]) and parts[1].isdisjoint(parts[2])
     assert set().union(*parts) == set(GROUPS["all_observable"]) and len(set().union(*parts)) == 12 and GROUPS["unobservable"] == (110,)
+
+
+def test_geodesic_field_goes_around_a_building(scene):
+    from srcloc_env.baselines.planning import GeodesicField
+    geo = GeodesicField(scene.obstacles)
+    f = geo.field((60.0, 14.0))
+    behind = float(geo.value(f, np.array([[150.0, 14.0]]))[0])                # straight line crosses the 30 m block (x 90-108, y 5-23)
+    open_ = float(geo.value(f, np.array([[150.0, -50.0]]))[0])
+    assert np.isfinite(behind) and behind > 90.0 + 5.0                        # longer than the straight 90 m: detour around the block
+    assert 90.0 < open_ < 140.0                                               # open side: close to the Euclidean 90-120 m
+    assert float(geo.value(f, np.array([[60.0, 14.0]]))[0]) < 10.0
+
+
+def test_greedy_map_and_oracle_reach_a_target_behind_a_building(scene):
+    env = SourceLocEnv(scene, max_steps=120, **KW)
+    obs, info = env.reset(seed=2, options={"source": 1, "start_xy": (150.0, 14.0), "frame": 450})
+    target = np.array([60.0, 14.0])
+    env.gmm = GmmSummary(np.array([1.0, 0, 0]), np.array([target, [0, 0], [0, 0]], float),
+                         np.array([np.eye(2) * 25] * 3), np.array([True, False, False]))
+    env._refresh_gmm = lambda: None
+    pol = GreedyMapPolicy()
+    pol.reset(env, info)
+    for _ in range(60):
+        obs, r, term, trunc, info = env.step(int(pol.act(env, obs, info)[0]))
+    assert np.hypot(*(env.xy - target)) < 8.0                                  # the Euclidean version stalls at x ~ 110
+    env2 = SourceLocEnv(scene, max_steps=120, **KW)
+    obs, info = env2.reset(seed=2, options={"source": 1, "start_xy": (150.0, 14.0), "frame": 450})
+    from srcloc_env.baselines.policies import OracleLoiterPolicy
+    orc = OracleLoiterPolicy(loiter_m=15.0)
+    orc.reset(env2, info)
+    peak = orc.peak.copy()
+    for _ in range(80):
+        obs, r, term, trunc, info = env2.step(int(orc.act(env2, obs, info)[0]))
+    assert np.hypot(*(env2.xy - peak)) <= 16.0                                 # arrived and loiters within the disc

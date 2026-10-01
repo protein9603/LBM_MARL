@@ -507,8 +507,8 @@ ENV_REWARD_SUCCESS = 10.0                # terminal success bonus (GMM top sigma
 ENV_FAIL_ERROR_CAP_M = 300.0             # terminal failure term -min(error, 300 m) / 100 m at truncation (MAX_EPISODE_STEPS) [plan 4.5]
 ENV_FAIL_ERROR_SCALE_M = 100.0           # [plan 4.5]
 ENV_START_MIN_DIST_M = LIB_START_MIN_DISTANCE_M   # 200 m: drone start distance from the true source [plan 4.5]
-ENV_START_DOWNWIND_FRAC = 0.5            # probability that the start is required to be downwind of the source's local 15 m wind [plan 4.5]
-ENV_START_WIND_MIN = 0.1                 # m/s: below this wind speed at the source the downwind requirement is skipped (courtyard sources) [추정]
+ENV_START_PLUME_FRAC = 0.5               # [결정 2026-10-01 D9-4] probability that the drone starts INSIDE the detectable plume region (expected count of the episode's source at the start >= Currie threshold, distance >= ENV_START_MIN_DIST_M); the other episodes start anywhere (random). Replaces the half-plane 'downwind' rule (ENV_START_DOWNWIND_FRAC 0.5, plan 4.5), under which no baseline got within 100 m of the source in > 80 % of the T2-4 episodes (median start-to-plume distance 328 m but 1.5 km of path, validation_log D9-4) [D9-4 결과]
+ENV_START_PLUME_MIN_COUNTS_FACTOR = 1.0  # plume start iff expected counts (k0 scale n + b) T >= factor x Currie threshold x T [결정 D9-4]
 ENV_START_BATCH = 256                    # candidate starts drawn per rejection batch (uniform in the PF prior box) [추정]
 ENV_START_MAX_BATCHES = 50               # RuntimeError after 50 x 256 candidates without a free start [추정]
 ENV_GMM_EVERY = 1                        # GMM summary refresh period in RL steps (1 = every step; T2-3 measures the cost, fallback 5 as in T1-4) [plan 4.5, T2-3]
@@ -531,3 +531,13 @@ EVAL_PROCESSES = 3                        # evaluation worker processes (4 cores
 INFOTAXIS_N_SUB = 500                     # GMM-Infotaxis: weighted bootstrap subsample of the PF particles scored per action (plan 4.7) [plan 4.7]
 INFOTAXIS_N_SAMPLES = 10                  # GMM-Infotaxis: predictive count samples per candidate position (plan 4.7); fallback 5 if the step time exceeds the budget (plan R7) [plan 4.7]
 G2_MIN_SUCCESS_RATE = 0.05                # gate G2 T2-4: the preliminary batch must contain at least one method with >= 5 % success on the 12 observable sources, otherwise the ordering test cannot discriminate (reported as degenerate) [결정 D9-4]
+INFOTAXIS_TIE_TOL_NATS = 0.05            # GMM-Infotaxis: actions within this many nats of the best expected posterior entropy count as tied (spread of the 9 scores is ~0.03 nats when no signal; sampling noise level) and are resolved by following the belief's top GMM component (D9-4: pure arg-min made the drone a random walk far from the plume) [결정 D9-4]
+
+# --------------------------------------------------------------------------------------
+# Two-level success criterion of the environment / evaluation  [결정 2026-10-01 D9-4; docs/validation_log.md D9-4 결정]  -- appended D9-4
+# --------------------------------------------------------------------------------------
+ENV_SUCCESS_SIGMA_M = 30.0   # PRIMARY success (reward bonus, termination, Table 2 success rate): GMM top-component sigma < 30 m ...
+ENV_SUCCESS_ERROR_M = 50.0   # ... and |MAP - truth| < 50 m. Evidence: a perfect-search oracle (flies to the plume peak and loiters, 300 steps, 60 episodes on 12 sources) reaches the strict criterion in 25 %, (20, 30) in 40 %, (30, 50) in 60 % - the PF resolves the source to ~20-50 m (15 m plume offset 20-80 m from the source, clump-driven errors), so the plan's 15 / 20 m is a precision metric, not a success criterion [D9-4 결과]
+# SUCCESS_SIGMA_M = 15 m / SUCCESS_ERROR_M = 20 m (plan 4.5) stay as the STRICT criterion: every evaluation episode records both
+EVAL_NO_EARLY_STOP = True    # run_eval: episodes run the full MAX_EPISODE_STEPS (terminate_on_success=False) so that every criterion / threshold can be evaluated afterwards from the per-step series [결정 D9-4]
+G2_ORACLE_MIN_SUCCESS_RATE = 0.40         # gate G2: the privileged-information oracle (perfect search) must reach this primary-criterion success rate on the 12 observable sources, i.e. the environment / PF / success test can succeed (smoke_v2: 56 %, strict 25 %) [결정 D9-4]
