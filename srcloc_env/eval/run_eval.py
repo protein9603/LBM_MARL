@@ -123,7 +123,12 @@ def _worker(task: dict) -> dict:
         _ENVS[key] = make_env(_SCENE, key[0], key[1])
     env = _ENVS[key]
     spec = EpisodeSpec(**task["spec"])
-    policy = make_policy(task["method"], **task.get("policy_kw", {}).get(task["method"], {}))
+    kw = task.get("policy_kw", {}).get(task["method"], {})
+    if "checkpoint" in kw:                                              # trained PPO checkpoint under an alias (rl/ppo_policy.py)
+        from srcloc_env.rl.ppo_policy import PPOPolicy
+        policy = PPOPolicy(kw["checkpoint"], alias=task["method"], deterministic=bool(kw.get("deterministic", config.PPO_EVAL_DETERMINISTIC)))
+    else:
+        policy = make_policy(task["method"], **kw)
     rec, log = run_episode(env, policy, spec, log_steps=task["log_steps"])
     if log is not None:
         p = Path(task["step_dir"]) / f"{task['method']}_{key[0]}drones_ep{spec.episode_id:04d}.npz"
@@ -224,7 +229,9 @@ def build_summary(out_dir: Path, recs: list[dict], tag: str, mode: str, total_s:
 
 def main(argv: list[str] | None = None) -> dict:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--methods", nargs="+", default=list(POLICIES), choices=list(POLICIES) + list(VERIFICATION_POLICIES))
+    ap.add_argument("--methods", nargs="*", default=list(POLICIES), choices=list(POLICIES) + list(VERIFICATION_POLICIES))
+    ap.add_argument("--ppo", nargs="*", default=[], metavar="ALIAS=CHECKPOINT", help="trained PPO checkpoints evaluated as extra methods under ALIAS (e.g. ppo_m1=final.pt)")
+    ap.add_argument("--ppo-deterministic", action="store_true", help="PPO methods take the arg-max action (reference rows only)")
     ap.add_argument("--n-drones", type=int, nargs="+", default=[1, 2])
     ap.add_argument("--n-per-source", type=int, default=config.EVAL_PRELIM_EPISODES_PER_SOURCE)
     ap.add_argument("--sources", type=int, nargs="*", default=list(config.ALL_SOURCES))
@@ -263,6 +270,12 @@ def main(argv: list[str] | None = None) -> dict:
         specs = specs[:args.max_episodes]
     save_episode_list(specs, out_dir / "episodes.csv")
     policy_kw = {"gmm_infotaxis": {"tie_tol": args.tie_tol}} if args.tie_tol is not None else {}
+    for spec_s in args.ppo:
+        alias, _, ckpt = spec_s.partition("=")
+        if not alias or not ckpt or alias in POLICIES or alias in VERIFICATION_POLICIES:
+            raise SystemExit(f"--ppo expects ALIAS=CHECKPOINT with a new alias, got {spec_s}")
+        policy_kw[alias] = {"checkpoint": ckpt, "deterministic": args.ppo_deterministic}
+        args.methods = list(args.methods) + [alias]
     tasks = [{"method": m, "n_drones": n, "mode": args.mode, "spec": spec.__dict__, "log_steps": args.log_steps,
               "step_dir": str(out_dir / "steps"), "policy_kw": policy_kw}
              for m in args.methods for n in args.n_drones for spec in specs]

@@ -549,3 +549,34 @@ LAWN_ROW_SPACING_M = 150.0       # cross-wind transects (rows along y) every ~15
 LAWN_ALONG_SPACING_M = 100.0     # classical along-wind rows (variant 'lawnmower_alongwind'): the plume width (20-50 m) would need 20-50 m spacing, 100 m is the usual sensor-swath choice [추정]
 LAWN_WP_SPACING_M = 25.0         # waypoint spacing along a row (the geodesic follower flies around buildings between waypoints; one 39 ms field per waypoint change) [추정]
 LAWN_ADVANCE_M = 10.0            # the next waypoint becomes the target when the drone is within this distance of the current one (2 steps) [추정]
+
+
+# --------------------------------------------------------------------------------------
+# D10 - parameter-shared PPO (rl/ppo.py, rl/train.py; plan 4.6, S3; docs/training_evaluation_spec.md section 6)
+# --------------------------------------------------------------------------------------
+PPO_HIDDEN = (128, 128)               # separate actor and critic MLPs, tanh [plan 4.6; separate networks: Andrychowicz et al. 2021, Yu et al. 2022]
+PPO_N_STEPS = 512                     # team steps per worker per iteration (3 workers -> 1,536 team steps) [plan 4.6]
+PPO_N_PROCS = 3                       # rollout worker processes (4 cores, one left for checkpoint evaluation / main) [plan S3]
+PPO_MINIBATCH = 256                   # [plan 4.6]
+PPO_EPOCHS = 4                        # [plan 4.6]
+PPO_LR = 3e-4                         # Adam, constant [plan 4.6]
+PPO_GAMMA = 0.99                      # [plan 4.6]
+PPO_GAE_LAMBDA = 0.95                 # [plan 4.6]
+PPO_CLIP = 0.2                        # [plan 4.6]
+PPO_VF_COEF = 0.5                     # [plan 4.6]
+PPO_ENT_COEF = 0.01                   # [plan 4.6]
+PPO_MAX_GRAD_NORM = 0.5               # clipped separately for the actor and the critic (their gradient scales differ by the return scale ~10) [추정 추가]
+PPO_ADV_NORMALISE = True              # per-iteration advantage standardisation (standard PPO implementation detail, Engstrom et al. 2020) [추정 추가]
+PPO_LOGIT_MASK_VALUE = -1.0e9         # logit of a masked action (probability exactly 0 in float32; avoids the 0 * -inf = nan of an -inf mask) [추정]
+PPO_ORTHO_GAIN_HIDDEN = 1.4142135623730951   # sqrt(2): orthogonal initialisation of hidden layers (Andrychowicz et al. 2021) [추정 추가]
+PPO_ORTHO_GAIN_POLICY = 0.01          # policy head: near-uniform initial policy over the allowed actions [추정 추가]
+PPO_ORTHO_GAIN_VALUE = 1.0
+TRAIN_M1_STEPS = 1_000_000            # M1: 1 drone, environment (= team) steps [plan 4.6]
+TRAIN_M2_STEPS = 500_000              # M2: 2 drones, team steps (= 1 M agent transitions) [plan 4.6]
+TRAIN_CKPT_INTERVAL_S = 1800.0        # checkpoint every 30 min (plus the final one) [plan 4.6]
+TRAIN_SEED_RUN_STRIDE = 1_000_000     # training environment seed = 1e6 run_seed + 1e5 proc + episode_idx; disjoint from EVAL_BASE_SEED / EVAL_CKPT_BASE_SEED [spec 1.3]
+TRAIN_SEED_PROC_STRIDE = 100_000
+TRAIN_ROOT = CACHE_DIR / "train"      # run directories (config.json, train_log.csv, episodes.csv, checkpoints, ckpt_eval)
+EVAL_CKPT_BASE_SEED = 30_261_001      # seed of the checkpoint quick-evaluation list (curves only; never used for selection) [spec 6]
+EVAL_CKPT_EPISODES_PER_SOURCE = 5     # 12 sources x 5 = 60 episodes per checkpoint [spec 6]
+PPO_EVAL_DETERMINISTIC = False        # evaluation samples from the learned stochastic policy (the policy PPO optimises); the arg-max variant is a reference row only [결정 2026-10-02, 추정]
