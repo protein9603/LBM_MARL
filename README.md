@@ -21,10 +21,10 @@ srcloc_env/                package (flat layout)
   sensor/                  detector (gather -> particles/m^3 -> Poisson counts)
   pf/                      forward_model, particle_filter (RB-PF), gmm_summary
   env/                     drone, source_env (Gymnasium), multi_agent
-  baselines/               lawnmower, random_walk, greedy_map, gmm_infotaxis (verification only)
-  eval/                    metrics
-  rl/                      ppo
-  scripts/                 CLI entry points: convert_ldm, validate_*, fig_*, train_ppo, run_eval
+  baselines/               policies (random, lawnmower, greedy_map, gmm_infotaxis, oracle_loiter), coverage, planning
+  eval/                    episodes (common seed lists), run_eval (batch runner), metrics
+  rl/                      ppo (actor-critic, GAE, update), rollout (worker pool), train (CLI), ckpt_eval, ppo_policy
+  scripts/                 CLI entry points: convert_ldm, validate_*, gate_report, fig_*
 tests/                     pytest unit tests on synthetic data (no raw data needed)
 docs/                      references.md (which paper's method is used where and why), notes
 ```
@@ -56,3 +56,15 @@ python -m srcloc_env.scripts.convert_ldm --index 400 599 --slab-z 15 12.5 17.5  
 - "index step" = the number in `LDM_{step}stp.vtk`; 1 LDM step = 0.25 s (confirmed by the code owner);
   whether 1 LDM step = 10 index steps (interpretation A, default) is still being confirmed.
 - Airborne particles exclude deposited ones (z == 1e-4 and zero velocity) and the outflow pile-up (x >= 1315).
+
+## Training and evaluation (PPO)
+
+```powershell
+python -m srcloc_env.rl.train --n-drones 1 --run-seed 1 --run-name m1_s1 --total-steps 1000000      # M1
+python -m srcloc_env.rl.train --n-drones 2 --run-seed 1 --run-name m2_s1 --total-steps 500000 `
+       --init-from <cache>/train/m1_s1/final.pt                                                    # M2 from the M1 weights
+python -m srcloc_env.eval.run_eval --methods gmm_infotaxis --ppo ppo_m1=<cache>/train/m1_s1/final.pt --n-drones 1 --tag final
+```
+
+Runs write to `<cache>/train/<run-name>` (config.json, train_log.csv, episodes.csv, checkpoints, ckpt_eval), where `<cache>` is
+`config.CACHE_DIR`. Settings and rationale: `docs/training_evaluation_spec.md` section 6.
