@@ -4,7 +4,7 @@ Per episode record (eval/run_eval.py): success (true success: GMM top sigma < SU
 SUCCESS_ERROR_M), steps, final MAP error [m], first detection step (Currie threshold), path length [m], masked actions,
 declared-success step (first step with top sigma < SUCCESS_SIGMA_M) and the MAP error at that step (deployment view:
 a stopping rule that only uses the belief), wall time.
-Aggregates per (method, n_drones, group): success rate with Wilson 95 % CI, success-step median (successes only) with
+Aggregates per (method, n_drones, group; groups = GROUPS: mutually exclusive train_open / train_other / holdout, summaries train / all_observable, and the unobservable source 110 apart): success rate with Wilson 95 % CI, success-step median (successes only) with
 bootstrap CI, censored median (failures counted as max_steps), final error median / p90, first-detection median,
 declared-success rate = fraction of episodes whose declared stop is within SUCCESS_ERROR_M.
 Paired differences on the common episode list: per episode success difference and success-step difference.
@@ -17,12 +17,17 @@ import numpy as np
 
 from srcloc_env import config
 
+_TRAIN_OPEN = tuple(x for x in config.T1_3_OPEN_SOURCES if x in config.TRAIN_SOURCES)          # (101, 108, 111, 113): 109 is a holdout source
 GROUPS: dict[str, tuple[int, ...]] = {
-    "open": tuple(config.T1_3_OPEN_SOURCES),
-    "trapped": tuple(config.T1_3_TRAPPED_SOURCES + (104, 106)),
-    "holdout": tuple(config.HOLDOUT_SOURCES),
+    # mutually exclusive partition of the 12 observable sources (Table 2 rows; docs/training_evaluation_spec.md section 8):
+    "train_open": _TRAIN_OPEN,
+    "train_other": tuple(x for x in config.TRAIN_SOURCES if x not in _TRAIN_OPEN),                # (102, 104, 106, 107, 112): trapped / regression 102, 104, 106 + 107, 112
+    "holdout": tuple(config.HOLDOUT_SOURCES),                                                      # (103, 105, 109)
+    # summary rows
     "train": tuple(config.TRAIN_SOURCES),
-    "all_observable": tuple(s for s in config.ALL_SOURCES if s not in config.EXCLUDED_SOURCES),
+    "all_observable": tuple(x for x in config.ALL_SOURCES if x not in config.EXCLUDED_SOURCES),
+    # reported separately, never part of a success-rate aggregate of the rows above
+    "unobservable": tuple(config.EXCLUDED_SOURCES),                                                # (110): not observable at the fixed 15 m altitude (D7-4)
 }
 
 
@@ -90,7 +95,8 @@ def paired_differences(rec_a: Iterable[dict], rec_b: Iterable[dict], max_steps: 
             "n_b_only": int(sum(d < 0 for d in ds)), "censored_step_diff_median": med, "censored_step_diff_ci": [lo, hi]}
 
 
-def table2_markdown(agg_by_config: dict[str, dict], groups: Sequence[str] = ("open", "trapped", "holdout")) -> str:
+def table2_markdown(agg_by_config: dict[str, dict],
+                    groups: Sequence[str] = ("train_open", "train_other", "holdout", "train", "all_observable", "unobservable")) -> str:
     """agg_by_config[label] = aggregate(...) -> markdown rows label x group."""
     lines = ["| 방법 (드론 수) | 그룹 | n | 성공률 [95% CI] | 성공 스텝 중앙값 [CI] | 검열 중앙값 | 최종 오차 중앙값 / p90 [m] | 선언 성공률 |",
              "|---|---|---|---|---|---|---|---|"]

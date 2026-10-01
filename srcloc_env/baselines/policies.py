@@ -13,7 +13,8 @@ lawnmower   each drone follows a precomputed sawtooth lawnmower (scripts/validat
             their own bands around their own starts (영역 분할), alternating phase.
 greedy_map  move towards the mean of the top GMM component of the shared belief (allowed action minimising the distance of
             its landing point to the target); stay when already within half a step.
-gmm_infotaxis   one-step expected entropy reduction (Infotaxis, R6 / GMM-Infotaxis R7): for every allowed action the
+gmm_infotaxis   one-step expected entropy reduction (Infotaxis, R6 / GMM-Infotaxis R7; D9-3: vectorised, common random
+            numbers across the candidate actions so that actions differ only through their predicted rates): for every allowed action the
             drone's landing point p' is scored by the expected posterior entropy of the belief after one measurement
             there, estimated on a weighted subsample of config.INFOTAXIS_N_SUB particles with config.INFOTAXIS_N_SAMPLES
             predictive count samples (y ~ likelihood(lambda), lambda = (kappa g(theta, p') + b) T with (theta, kappa)
@@ -28,6 +29,7 @@ from typing import Any
 
 import numpy as np
 from scipy.special import gammaln, logsumexp
+from scipy.stats import poisson as _poisson
 
 from srcloc_env import config
 from srcloc_env.env.drone import ACTION_STAY
@@ -165,29 +167,47 @@ class GmmInfotaxisPolicy(Policy):
         logv = logv - logsumexp(logv, axis=1, keepdims=True)               # normalised kappa grid per particle
         return pf.xy[idx].copy(), np.full(n, 1.0 / n), logv
 
-    def _expected_entropy(self, env, xy_sub, w_sub, logv_sub, p_xy: np.ndarray) -> tuple[float, float]:
-        """(expected posterior entropy after one measurement at p_xy, expected count) on the subsample."""
+    def _draw_common(self, env, xy_sub, w_sub, logv_sub) -> dict:
+        """Common random numbers of one decision (shared by every candidate action): particle index, kappa index,
+        Gamma mixing variable (negbin = Poisson(lambda G), G ~ Gamma(r, 1/r); G = 1 for Poisson) and a uniform."""
+        pf = env.pf
+        m = self.rng.choice(xy_sub.shape[0], size=self.n_samples, p=w_sub)
+        v = np.exp(logv_sub[m])
+        v /= v.sum(axis=1, keepdims=True)
+        cum = np.cumsum(v, axis=1)
+        gidx = np.minimum((cum < self.rng.random(self.n_samples)[:, None]).sum(axis=1), pf.G - 1)
+        if pf.likelihood == "poisson":
+            gam = np.ones(self.n_samples)
+        else:
+            r = float(pf.nb_r)
+            gam = self.rng.gamma(r, 1.0 / r, size=self.n_samples)
+        u = self.rng.random(self.n_samples)
+        return {"m": m, "g": gidx, "gam": gam, "u": u}
+
+    def _expected_entropy(self, env, xy_sub, w_sub, logv_sub, p_xy: np.ndarray, crn: dict) -> tuple[float, float]:
+        """(expected posterior entropy after one measurement at p_xy, expected count) on the subsample with the
+        common random numbers ``crn`` (vectorised over the predictive samples)."""
         pf = env.pf
         g = env.scene.model.unit_response(xy_sub, np.array([p_xy[0], p_xy[1], env.z]))[:, 0]        # (n,)
         lam = (pf.kgrid[None, :] * g[:, None] + pf.background) * pf.T                                  # (n, G)
         lik = "poisson" if pf.likelihood == "poisson" else "negbin"
         r = float(pf.nb_r)
-        # predictive samples: particle ~ w_sub, kappa ~ its grid, y ~ likelihood(lambda)
-        m = self.rng.choice(xy_sub.shape[0], size=self.n_samples, p=w_sub)
-        v = np.exp(logv_sub[m])
-        gidx = np.array([self.rng.choice(pf.G, p=v[k] / v[k].sum()) for k in range(self.n_samples)])
-        lam_s = lam[m, gidx]
+        lam_s = lam[crn["m"], crn["g"]]                                                                # (S,)
+        ys = _poisson.ppf(crn["u"], lam_s * crn["gam"]).astype(np.float64)                             # CRN counts
+        log_lam = np.log(lam)
         if lik == "poisson":
-            ys = self.rng.poisson(lam_s)
+            base = logv_sub[None, :, :] + ys[:, None, None] * log_lam[None, :, :] - lam[None, :, :]   # (S, n, G) up to const(y)
         else:
-            ys = self.rng.negative_binomial(r, r / (r + lam_s))
-        h_sum = 0.0
-        for y in ys:
-            ll = logsumexp(logv_sub + _log_pmf(float(y), lam, lik, r), axis=1)                        # (n,) marginal over kappa
-            lw = np.log(w_sub) + ll
-            w_post = np.exp(lw - logsumexp(lw))
-            h_sum += _hist_entropy(xy_sub, w_post, self.cell, env.prior_x, env.prior_y)
-        return h_sum / len(ys), float(np.mean(lam_s))
+            t = np.log(lam + r)
+            base = (logv_sub[None, :, :] + ys[:, None, None] * (log_lam - t)[None, :, :] + (r * (np.log(r) - t))[None, :, :])
+        mx = base.max(axis=2, keepdims=True)
+        ll = np.log(np.exp(base - mx).sum(axis=2)) + mx[:, :, 0]                                        # (S, n) marginal over kappa (const(y) cancels)
+        lw = np.log(w_sub)[None, :] + ll
+        lw -= lw.max(axis=1, keepdims=True)
+        w_post = np.exp(lw)
+        w_post /= w_post.sum(axis=1, keepdims=True)
+        h = np.mean([_hist_entropy(xy_sub, w_post[k], self.cell, env.prior_x, env.prior_y) for k in range(w_post.shape[0])])
+        return float(h), float(np.mean(lam_s))
 
     def _virtual_update(self, env, xy_sub, w_sub, logv_sub, p_xy: np.ndarray, y_bar: float):
         pf = env.pf
@@ -205,12 +225,13 @@ class GmmInfotaxisPolicy(Policy):
         xy_sub, w_sub, logv_sub = self._subsample(env)
         acts, self.last_scores = [], []
         for xy in _positions(env):
+            crn = self._draw_common(env, xy_sub, w_sub, logv_sub)          # shared by all actions of this drone
             mask = env.kin.action_mask(xy)
             land = _landing(env, xy)
             scores = np.full(config.DRONE_N_ACTIONS, np.inf)
             ybar = np.zeros(config.DRONE_N_ACTIONS)
             for a in np.flatnonzero(mask):
-                scores[a], ybar[a] = self._expected_entropy(env, xy_sub, w_sub, logv_sub, land[a])
+                scores[a], ybar[a] = self._expected_entropy(env, xy_sub, w_sub, logv_sub, land[a], crn)
             a_best = int(np.argmin(scores))                                 # minimal expected posterior entropy
             acts.append(a_best)
             self.last_scores.append(scores)

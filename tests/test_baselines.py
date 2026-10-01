@@ -153,9 +153,14 @@ def test_metrics_wilson_bootstrap_aggregate_paired():
                "path_length_m": 100.0, "n_masked": 1} for i in range(8)]
     recs_b = [dict(r, success=False) for r in recs_a]
     agg = aggregate(recs_a)
-    assert agg["open"]["n"] == 4 and agg["open"]["n_success"] == 2 and agg["holdout"]["n"] == 4
-    assert agg["open"]["declared_success_rate"] == 1.0 and agg["all_observable"]["n"] == 8
+    assert agg["train_open"]["n"] == 4 and agg["train_open"]["n_success"] == 2 and agg["holdout"]["n"] == 4
+    assert agg["train_open"]["declared_success_rate"] == 1.0 and agg["all_observable"]["n"] == 8 and agg["train"]["n"] == 4
+    assert "unobservable" not in agg and "train_other" not in agg
     pd = paired_differences(recs_a, recs_b)
     assert pd["n"] == 8 and pd["success_rate_diff"] == 0.5 and pd["n_a_only"] == 4 and pd["n_b_only"] == 0
     md = table2_markdown({"random (1)": agg})
-    assert "| random (1) | open | 4 |" in md
+    assert "| random (1) | train_open | 4 |" in md
+    from srcloc_env.eval.metrics import GROUPS
+    parts = [set(GROUPS[g]) for g in ("train_open", "train_other", "holdout")]
+    assert parts[0].isdisjoint(parts[1]) and parts[0].isdisjoint(parts[2]) and parts[1].isdisjoint(parts[2])
+    assert set().union(*parts) == set(GROUPS["all_observable"]) and len(set().union(*parts)) == 12 and GROUPS["unobservable"] == (110,)
