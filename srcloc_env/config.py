@@ -517,3 +517,5 @@ ENV_GMM_WARM_START = True                # [결정 2026-10-01 D8-4] start the pe
 ENV_REFLECT_PROB_TRAIN = 0.5             # y-reflection probability of training episodes (evaluation 0) [plan 4.5]
 ENV_CHECK_RANDOM_STEPS = 10_000          # validate_env.py T2-1: random-policy steps without exception / building / domain violation [plan T2-1]
 ENV_STEP_TIME_TARGET_S = 0.02            # T2-3 target: >= 50 steps/s/core (20 ms per step incl. PF NB update + GMM) [plan T2-3, 추정 목표]
+ENV_TEAMMATE_DIM = 3                     # per-teammate observation block of MultiDroneEnv: relative position (dx, dy) / ENV_REL_NORM_M + teammate's latest normalised log count -> 2 drones 59, 3 drones 62 [plan 4.5]
+ENV_START_MIN_SEPARATION_M = 10.0        # minimum distance between drone starts of one episode (2 x DRONE_STEP_M; not in the plan, avoids coincident starts) [추정, D9-1]

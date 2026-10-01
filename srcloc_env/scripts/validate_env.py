@@ -2,7 +2,7 @@
 config.ENV_CHECK_RANDOM_STEPS steps (no exception, no building / domain violation) and the per-step timing of the
 environment (PF negative-binomial update + GMM summary + observation) -> steps per second per core.
 
-Usage: python -m srcloc_env.scripts.validate_env [--steps 10000] [--seed 0] [--gmm-every 1] [--n-particles 2000]
+Usage: python -m srcloc_env.scripts.validate_env [--steps 10000] [--seed 0] [--gmm-every 1] [--n-particles 2000] [--n-drones 1]
                                                  [--mode F|T2] [--reflect] [--out <CACHE_DIR>/validate_env.json]
 Writes config.CACHE_DIR / validate_env.json.
 
@@ -24,20 +24,26 @@ import numpy as np
 from gymnasium.utils.env_checker import check_env
 
 from srcloc_env import config
+from srcloc_env.env.multi_agent import MultiDroneEnv
 from srcloc_env.env.source_env import Scene, SourceLocEnv
 
 
 def run_random_policy(env: SourceLocEnv, n_steps: int, seed: int) -> dict:
+    """Works for SourceLocEnv (scalar actions) and MultiDroneEnv ((n,) actions; every drone checked)."""
     rng = np.random.default_rng(seed)
+    n = int(getattr(env, "n_drones", 1))
+    multi = hasattr(env, "xys")
+    positions = (lambda: env.xys.copy()) if multi else (lambda: env.xy[None, :].copy())
+    masks_of = (lambda: env.action_masks()) if multi else (lambda: env.action_mask()[None, :])
     obs, info = env.reset(seed=seed)
     t_step, t_pf, t_gmm, t_obs, t_reset = [], [], [], [], []
     n_masked = n_violation = n_outside = n_success = n_trunc = n_exc = 0
     ep_len, lengths, successes, errors = 0, [], [], []
     sources, frames = [], []
     for i in range(n_steps):
-        a = int(rng.integers(env.action_space.n))
-        mask = env.action_mask()
-        before = env.xy.copy()
+        a = rng.integers(config.DRONE_N_ACTIONS, size=n) if multi else int(rng.integers(env.action_space.n))
+        mask = masks_of()
+        before = positions()
         try:
             obs, r, term, trunc, info = env.step(a)
         except Exception as exc:                                        # noqa: BLE001 - T2-1 counts exceptions
@@ -49,15 +55,17 @@ def run_random_policy(env: SourceLocEnv, n_steps: int, seed: int) -> dict:
         ep_len += 1
         tm = env.last_timing
         t_step.append(tm["total_s"]); t_pf.append(tm["pf_s"]); t_gmm.append(tm["gmm_s"]); t_obs.append(tm["obs_s"])
-        if not mask[a]:
-            n_masked += 1
-            if not np.array_equal(env.xy, before):
-                n_violation += 1
+        acts = np.atleast_1d(a)
+        after = positions()
+        applied = info["applied"] if multi else [info["applied"]]
+        for i in range(n):
+            if not mask[i, acts[i]]:
+                n_masked += 1
+                if applied[i] or not np.array_equal(after[i], before[i]):
+                    n_violation += 1
         om = env.scene.obstacles                                        # the CURRENT orientation (reflected episodes)
-        if not om.is_free(env.xy, env.z):
-            n_violation += 1
-        if not om.in_domain(env.xy):
-            n_outside += 1
+        n_violation += int(np.sum(~np.atleast_1d(om.is_free(after, env.z))))
+        n_outside += int(np.sum(~np.atleast_1d(om.in_domain(after))))
         if not env.observation_space.contains(obs):
             n_violation += 1
         if term or trunc:
@@ -89,6 +97,7 @@ def main(argv: list[str] | None = None) -> dict:
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--gmm-every", type=int, default=config.ENV_GMM_EVERY)
     ap.add_argument("--n-particles", type=int, default=config.PF_N_PARTICLES)
+    ap.add_argument("--n-drones", type=int, default=1, help="> 1 runs MultiDroneEnv (per-drone safety check, team step timing)")
     ap.add_argument("--em-iters", type=int, default=config.ENV_GMM_EM_ITERS, help="GMM EM iterations per refresh (plan fallback 10)")
     ap.add_argument("--warm-start", action=argparse.BooleanOptionalAction, default=config.ENV_GMM_WARM_START,
                     help="EM warm start from the previous step's summary (default config.ENV_GMM_WARM_START; --no-warm-start = cold k-means++ EM) (D8-4)")
@@ -101,15 +110,17 @@ def main(argv: list[str] | None = None) -> dict:
     scene = Scene.load()
     scene_r = scene.reflected_scene() if args.reflect else None
     load_s = time.perf_counter() - t0
-    env = SourceLocEnv(scene, truth_mode=args.mode, n_particles=args.n_particles, gmm_every=args.gmm_every,
-                       gmm_iters=args.em_iters, gmm_warm_start=args.warm_start,
-                       scene_reflected=scene_r, reflect_prob=config.ENV_REFLECT_PROB_TRAIN if args.reflect else 0.0)
+    env_kw = dict(truth_mode=args.mode, n_particles=args.n_particles, gmm_every=args.gmm_every,
+                  gmm_iters=args.em_iters, gmm_warm_start=args.warm_start,
+                  scene_reflected=scene_r, reflect_prob=config.ENV_REFLECT_PROB_TRAIN if args.reflect else 0.0)
+    env = MultiDroneEnv(scene, n_drones=args.n_drones, **env_kw) if args.n_drones > 1 else SourceLocEnv(scene, **env_kw)
     print(f"[setup] scene {load_s:.1f} s (adjoint build {scene.seconds_build:.2f} s, free cells {scene.model.op.n_free if hasattr(scene.model, 'op') else 'n/a'}); "
-          f"mode {args.mode}, particles {args.n_particles}, gmm_every {args.gmm_every}, EM iters {args.em_iters}, warm start {args.warm_start}, reflect {args.reflect}", flush=True)
+          f"mode {args.mode}, drones {args.n_drones}, particles {args.n_particles}, gmm_every {args.gmm_every}, EM iters {args.em_iters}, warm start {args.warm_start}, reflect {args.reflect}", flush=True)
     t0 = time.perf_counter()
-    check_env(env, skip_render_check=True)
+    if args.n_drones == 1:
+        check_env(env, skip_render_check=True)
     check_s = time.perf_counter() - t0
-    print(f"[T2-1] gymnasium env_checker passed in {check_s:.1f} s", flush=True)
+    print(f"[T2-1] gymnasium env_checker {'passed' if args.n_drones == 1 else 'skipped (multi-agent spaces)'} in {check_s:.1f} s", flush=True)
     t0 = time.perf_counter()
     rp = run_random_policy(env, args.steps, args.seed)
     rp_s = time.perf_counter() - t0
@@ -123,9 +134,9 @@ def main(argv: list[str] | None = None) -> dict:
           f"PF {tm['pf_median_s'] * 1e3:.1f} ms, GMM {tm['gmm_median_s'] * 1e3:.1f} ms, obs {tm['obs_median_s'] * 1e3:.2f} ms; "
           f"reset {tm['reset_median_s'] * 1e3:.0f} ms; {tm['steps_per_s_median']:.0f} steps/s/core -> "
           f"{'PASS' if tm['pass'] else 'FAIL'} (target {config.ENV_STEP_TIME_TARGET_S * 1e3:.0f} ms)", flush=True)
-    res = {"created": time.strftime("%Y-%m-%d %H:%M:%S"), "mode": args.mode, "n_particles": args.n_particles,
+    res = {"created": time.strftime("%Y-%m-%d %H:%M:%S"), "mode": args.mode, "n_drones": args.n_drones, "n_particles": args.n_particles,
            "gmm_every": args.gmm_every, "em_iters": args.em_iters, "warm_start": args.warm_start, "reflect": args.reflect, "seed": args.seed, "scene_load_s": load_s,
-           "adjoint_build_s": scene.seconds_build, "env_checker": {"pass": True, "seconds": check_s},
+           "adjoint_build_s": scene.seconds_build, "env_checker": {"pass": True, "seconds": check_s, "skipped_multi": args.n_drones > 1},
            "random_policy": rp, "t2_1_pass": bool(t21), "t2_3_pass": bool(tm["pass"]), "random_policy_seconds": rp_s,
            "obs_dim": config.ENV_OBS_DIM, "n_actions": config.DRONE_N_ACTIONS, "adjoint": {"K": scene.params.K, "lam": scene.params.lam},
            "likelihood": config.PF_LIKELIHOOD, "nb_r": config.PF_NB_DISPERSION_R, "sources": list(env.sources)}
