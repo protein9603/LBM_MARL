@@ -530,3 +530,4 @@ EVAL_N_BOOTSTRAP = 1000                   # bootstrap resamples of the success-s
 EVAL_PROCESSES = 3                        # evaluation worker processes (4 cores, one left for the main process; plan S4 에피소드 단위 분배) [plan S4]
 INFOTAXIS_N_SUB = 500                     # GMM-Infotaxis: weighted bootstrap subsample of the PF particles scored per action (plan 4.7) [plan 4.7]
 INFOTAXIS_N_SAMPLES = 10                  # GMM-Infotaxis: predictive count samples per candidate position (plan 4.7); fallback 5 if the step time exceeds the budget (plan R7) [plan 4.7]
+G2_MIN_SUCCESS_RATE = 0.05                # gate G2 T2-4: the preliminary batch must contain at least one method with >= 5 % success on the 12 observable sources, otherwise the ordering test cannot discriminate (reported as degenerate) [결정 D9-4]

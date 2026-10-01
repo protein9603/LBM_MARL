@@ -1,6 +1,6 @@
 """Gate report: collect the acceptance-test JSONs of a stage into one go/no-go summary (plan section 3).
 
-Usage: python -m srcloc_env.scripts.gate_report --gate G0|G1  -> cache/g0_report.json / g1_report.json
+Usage: python -m srcloc_env.scripts.gate_report --gate G0|G1|G2 [--eval-tag t2_4_prelim]  -> cache/g0_report.json / g1_report.json / g2_report.json
 G0 (plan S0): T0-1 kernel reproduction, T0-2 cache, T0-3 slab vs exact gather, T0-4 growth table,
 T0-5 query latency, plus the wind / obstacle / alignment checks used by the environment.
 G1 (plan S1, 2026-09-30 보강 포함): library selection >= 95%, T1-2b kappa grid, T1-2 kappa bias criterion 2,
@@ -11,6 +11,11 @@ the truth mode and the D7-3 final_verdicts (regression sources not regressed vs 
 The T1-5 item reads validate_t1_5.json, which is computed from the t1_4_snapshots_{src}.npz written by the SAME
 validate_t1_4 run: it is marked stale (and fails) when its 'created' stamp is older than validate_t1_4.json's
 (D7-3 review: the Poisson-snapshot T1-5 must not be combined with the negative-binomial T1-4).
+G2 (plan S2, D9-4): T2-1 random-policy safety (1 and 2 drones, validate_env*.json), T2-2 determinism (checked live on
+tiny synthetic-seed episodes of the real scene), T2-3 step time <= 20 ms and the GMM-Infotaxis decision time within the
+5-10x budget, T2-4 baseline ordering GMM-Infotaxis >= greedy-MAP >= lawnmower >= random on the preliminary batch
+(cache/eval/<tag>/summary.json): success rate on the 12 observable sources, with the censored success-step median and the
+final-error median as tie-breakers; a batch where no method reaches G2_MIN_SUCCESS_RATE is flagged degenerate.
 """
 from __future__ import annotations
 
@@ -123,11 +128,89 @@ def g1() -> dict:
     return {"gate": "G1", "date": date.today().isoformat(), "items": items, "pass": ok, "decision": decision}
 
 
+def _t2_2_determinism(n_steps: int = 25) -> dict:
+    """Run the real-scene environments twice with the same seed (1 and 2 drones) and compare every observation, reward and flag."""
+    import numpy as np
+    from srcloc_env.env.multi_agent import MultiDroneEnv
+    from srcloc_env.env.source_env import Scene, SourceLocEnv
+    scene = Scene.load()
+    out = {}
+    for n in (1, 2):
+        mk = (lambda: SourceLocEnv(scene, n_particles=500)) if n == 1 else (lambda: MultiDroneEnv(scene, n_drones=2, n_particles=500))
+        e1, e2 = mk(), mk()
+        o1, _ = e1.reset(seed=123)
+        o2, _ = e2.reset(seed=123)
+        same = bool(np.array_equal(o1, o2))
+        rng = np.random.default_rng(1)
+        for _ in range(n_steps):
+            a = int(rng.integers(9)) if n == 1 else rng.integers(9, size=2)
+            s1, s2 = e1.step(a), e2.step(a)
+            same &= bool(np.array_equal(s1[0], s2[0]) and s1[1] == s2[1] and s1[2] == s2[2] and s1[3] == s2[3])
+        out[f"{n}_drone"] = same
+    return {"pass": all(out.values()), "identical_rollouts": out, "criterion": "same seed -> identical observations / rewards / flags (25 steps)"}
+
+
+def g2(eval_tag: str = "t2_4_prelim") -> dict:
+    env1, env2 = _load("validate_env.json"), _load("validate_env_2drones.json")
+    summ = _load(f"eval/{eval_tag}/summary.json")
+
+    def safe(rep):
+        if not rep:
+            return {"pass": False, "note": "missing"}
+        rp = rep["random_policy"]
+        return {"pass": bool(rp["n_exceptions"] == 0 and rp["n_violations"] == 0 and rp["n_outside_domain"] == 0),
+                "n_steps": rp["n_steps"], "exceptions": rp["n_exceptions"], "violations": rp["n_violations"], "outside": rp["n_outside_domain"],
+                "criterion": "10,000 random steps: 0 exceptions, 0 building positions, 0 outside the domain"}
+
+    items = {"T2-1 single-drone env_checker + random-policy safety": {**safe(env1), "env_checker": bool(env1 and env1["env_checker"]["pass"])},
+             "T2-1 two-drone random-policy safety": safe(env2),
+             "T2-2 determinism (live)": _t2_2_determinism(),
+             "T2-3 environment step time (1 drone) <= 20 ms": {
+                 "pass": bool(env1 and env1["t2_3_pass"]), "step_median_ms": env1 and env1["random_policy"]["timing"]["step_median_s"] * 1e3,
+                 "steps_per_s": env1 and env1["random_policy"]["timing"]["steps_per_s_median"], "criterion": "median <= 20 ms (>= 50 steps/s/core)"}}
+    if summ:
+        cfg = summ["aggregates"]
+        tim = summ["timing"]
+        ifx = {n: tim.get(f"gmm_infotaxis ({n})", {}).get("episode_wall_s_median") for n in (1, 2)}
+        env_ms = {1: env1 and env1["random_policy"]["timing"]["step_median_s"] * 1e3,
+                  2: (_load("validate_env_2drones_idle.json") or env2)["random_policy"]["timing"]["step_median_s"] * 1e3}
+        mult = {n: (ifx[n] / config.MAX_EPISODE_STEPS * 1e3) / env_ms[n] if ifx[n] and env_ms[n] else None for n in (1, 2)}
+        items["T2-3 GMM-Infotaxis decision-step multiple within 10x"] = {
+            "pass": bool(all(m is not None and m <= 10.0 for m in mult.values())), "multiple_of_env_step": mult,
+            "episode_wall_s": ifx, "criterion": "(episode wall / 300) / env step <= 10 (plan target 5-10x)"}
+        order = ["gmm_infotaxis", "greedy_map", "lawnmower", "random"]
+        for n in (1, 2):
+            rows = {m: cfg.get(f"{m} ({n})", {}).get("all_observable") for m in order}
+            if any(v is None for v in rows.values()):
+                items[f"T2-4 baseline ordering ({n} drone)"] = {"pass": False, "note": "missing configuration in the batch"}
+                continue
+            rate = {m: rows[m]["success_rate"] for m in order}
+            cens = {m: rows[m]["censored_step_median"] for m in order}
+            err = {m: rows[m]["final_error_median_m"] for m in order}
+            ord_rate = all(rate[order[i]] >= rate[order[i + 1]] for i in range(3))
+            degenerate = max(rate.values()) < config.G2_MIN_SUCCESS_RATE
+            ord_err = all(err[order[i]] <= err[order[i + 1]] for i in range(3))
+            items[f"T2-4 baseline ordering ({n} drone)"] = {
+                "pass": bool(ord_rate and not degenerate), "success_rate": rate, "censored_step_median": cens, "final_error_median_m": err,
+                "order_by_success_rate_ok": bool(ord_rate), "order_by_final_error_ok": bool(ord_err), "degenerate_no_discrimination": bool(degenerate),
+                "n_episodes": {m: rows[m]["n"] for m in order},
+                "criterion": f"success rate GMM-Infotaxis >= greedy-MAP >= lawnmower >= random on the 12 observable sources, max rate >= {config.G2_MIN_SUCCESS_RATE:.0%}"}
+    else:
+        items["T2-4 baseline ordering"] = {"pass": False, "note": f"cache/eval/{eval_tag}/summary.json missing"}
+    ok = all(v["pass"] for v in items.values())
+    failing = [k for k, v in items.items() if not v["pass"]]
+    decision = ("S2 accepted; proceed to S3 (PPO)" if ok else
+                "FAIL: " + "; ".join(failing) + ". An inverted ordering is treated as a reward / success-criterion bug (plan T2-4); "
+                "a degenerate batch (no method reaches the minimum success rate) means the benchmark cannot discriminate and is reported as such.")
+    return {"gate": "G2", "date": date.today().isoformat(), "eval_tag": eval_tag, "items": items, "pass": ok, "decision": decision}
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--gate", default="G0", choices=["G0", "G1"])
+    ap.add_argument("--gate", default="G0", choices=["G0", "G1", "G2"])
+    ap.add_argument("--eval-tag", default="t2_4_prelim")
     args = ap.parse_args()
-    rep = g0() if args.gate == "G0" else g1()
+    rep = g0() if args.gate == "G0" else (g1() if args.gate == "G1" else g2(args.eval_tag))
     out = config.CACHE_DIR / f"{args.gate.lower()}_report.json"
     out.write_text(json.dumps(rep, indent=2), encoding="utf-8")
     print(json.dumps(rep, indent=2))
