@@ -32,11 +32,12 @@ def evaluate_checkpoint(ckpt: str | Path, out_csv: str | Path, n_per_source: int
     ck = load_checkpoint(ckpt)
     mode = str(ck.get("truth_mode", "F"))                        # the quick evaluation uses the truth mode and horizon the policy was trained on
     max_steps = int(ck.get("max_steps") or default_max_steps(mode))
-    n_drones = int(round((pol.net.obs_dim - config.ENV_OBS_DIM) / config.ENV_TEAMMATE_DIM)) + 1
+    obs_version = str(ck.get("obs_version", "v1"))                   # the observation the policy was trained on
+    n_drones = int(ck.get("n_drones") or (round((pol.net.obs_dim - config.ENV_OBS_DIM) / config.ENV_TEAMMATE_DIM) + 1))
     specs = make_episode_list(checkpoint_sources(), n_per_source, config.EVAL_CKPT_BASE_SEED, mode)
     if limit is not None:
         specs = specs[:limit]
-    env = make_env(load_scene(mode), n_drones, mode, max_steps)
+    env = make_env(load_scene(mode), n_drones, mode, max_steps, obs_version)
     t0 = time.perf_counter()
     recs = []
     seen: dict[int, int] = {}
@@ -50,7 +51,7 @@ def evaluate_checkpoint(ckpt: str | Path, out_csv: str | Path, n_per_source: int
         recs.append(rec)
     Path(out_csv).parent.mkdir(parents=True, exist_ok=True)
     write_records(Path(out_csv), recs)
-    out = {"n": len(recs), "wall_s": time.perf_counter() - t0, "n_drones": n_drones, "env_steps": pol.meta.get("env_steps"), "mode": mode, "max_steps": max_steps}
+    out = {"n": len(recs), "wall_s": time.perf_counter() - t0, "n_drones": n_drones, "env_steps": pol.meta.get("env_steps"), "mode": mode, "max_steps": max_steps, "obs_version": obs_version}
     for g in ("train", "holdout"):
         sel = [r for r in recs if r["group"] == g]
         out[f"success_{g}"] = float(np.mean([r["success"] for r in sel])) if sel else float("nan")

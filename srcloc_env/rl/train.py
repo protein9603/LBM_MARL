@@ -80,11 +80,14 @@ def train(a: argparse.Namespace) -> dict[str, Any]:
     n = int(a.n_drones)
     mode = str(a.truth_mode)
     max_steps = int(a.max_steps) if a.max_steps else default_max_steps(mode)
-    obs_dim = int(config.ENV_OBS_DIM + config.ENV_TEAMMATE_DIM * (n - 1))
+    obs_version = str(a.obs_version)
+    obs_dim = int(config.agent_obs_dim(obs_version, n))
     over = {k: v for k, v in {"minibatch": a.minibatch, "epochs": a.epochs, "lr": a.lr, "gamma": a.gamma, "gae_lambda": a.gae_lambda,
                               "ent_coef": a.ent_coef, "clip": a.clip, "target_kl": a.target_kl}.items() if v is not None}
     cfg = PPOConfig(n_steps=int(a.n_steps), **over)
     env_kw: dict[str, Any] = {"truth_mode": mode, "max_steps": max_steps}
+    if obs_version != "v1":
+        env_kw["obs_version"] = obs_version
     if a.sources:
         env_kw["sources"] = tuple(int(x) for x in a.sources)
     if a.start_plume_frac is not None:
@@ -128,7 +131,7 @@ def train(a: argparse.Namespace) -> dict[str, Any]:
     info = {"args": {k: (str(v) if isinstance(v, Path) else v) for k, v in vars(a).items()}, "ppo": cfg.to_dict(), "obs_dim": obs_dim,
             "n_drones": n, "init": init_note, "git_commit": _git_commit(), "torch": torch.__version__,
             "train_sources": list(config.TRAIN_SOURCES), "reflect_prob": config.ENV_REFLECT_PROB_TRAIN,
-            "success_sigma_m": config.ENV_SUCCESS_SIGMA_M, "success_error_m": config.ENV_SUCCESS_ERROR_M, "truth_mode": mode, "max_steps": max_steps,
+            "success_sigma_m": config.ENV_SUCCESS_SIGMA_M, "success_error_m": config.ENV_SUCCESS_ERROR_M, "obs_version": obs_version, "truth_mode": mode, "max_steps": max_steps,
             "env_kw": env_kw}
     cfg_name = "config.json" if not resume else f"config_resume_{it}.json"
     (run_dir / cfg_name).write_text(json.dumps(info, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -145,7 +148,7 @@ def train(a: argparse.Namespace) -> dict[str, Any]:
 
     def checkpoint(final: bool = False) -> None:
         extra = {"iteration": it, "env_steps": steps, "episode_idx": list(ep_idx), "n_drones": n, "run_name": a.run_name, "ppo": cfg.to_dict(),
-                 "truth_mode": mode, "max_steps": max_steps, "env_kw": env_kw}
+                 "truth_mode": mode, "max_steps": max_steps, "env_kw": env_kw, "obs_version": obs_version}
         path = run_dir / ("final.pt" if final else f"ckpt_{steps:08d}.pt")
         save_checkpoint(path, learner, extra)
         save_checkpoint(latest, learner, extra)
@@ -221,6 +224,7 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--truth-mode", choices=list(config.ENV_MODES), default=config.ENV_TRUTH_MODE_DEFAULT,
                     help="F = one frozen frame per episode, T2 = time-varying truth (frame 400 + t, D11)")
     ap.add_argument("--max-steps", type=int, default=0, help="episode horizon (0 = 300 in Mode F, config.T2_MAX_STEPS in Mode T2)")
+    ap.add_argument("--obs-version", choices=list(config.ENV_OBS_VERSIONS), default="v1", help="v1 = original observation (56 + 3 per teammate), v2 = egocentric observation (D12)")
     ap.add_argument("--sources", type=int, nargs="*", default=None, help="training sources (default config.TRAIN_SOURCES); the evaluation lists are unchanged")
     ap.add_argument("--start-plume-frac", type=float, default=None, help="probability that a drone starts inside the detectable plume region (default config.ENV_START_PLUME_FRAC)")
     ap.add_argument("--start-min-dist", type=float, default=None, help="minimum start distance from the source [m] (default 200)")

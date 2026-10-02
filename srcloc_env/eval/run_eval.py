@@ -38,9 +38,9 @@ RECORD_FIELDS = ["method", "n_drones", "episode_id", "seed", "source", "frame", 
                  "entropy_final", "top_sigma_final_m", "wall_s", "step_ms_median", "tie_tol", "tie_frac", "all_tied_frac", "calib_2sigma_frac"]
 
 
-def make_env(scene: Scene, n_drones: int, mode: str, max_steps: int | None = None) -> SourceLocEnv:
+def make_env(scene: Scene, n_drones: int, mode: str, max_steps: int | None = None, obs_version: str = "v1") -> SourceLocEnv:
     kw = dict(sources=config.ALL_SOURCES, truth_mode=mode, reflect_prob=0.0, terminate_on_success=not config.EVAL_NO_EARLY_STOP,
-              max_steps=int(max_steps) if max_steps is not None else default_max_steps(mode))
+              max_steps=int(max_steps) if max_steps is not None else default_max_steps(mode), obs_version=obs_version)
     return MultiDroneEnv(scene, n_drones=n_drones, **kw) if n_drones > 1 else SourceLocEnv(scene, **kw)
 
 
@@ -134,7 +134,8 @@ def run_episode(env: SourceLocEnv, policy, spec: EpisodeSpec, log_steps: bool = 
 
 # ------------------------------------------------------------------------------------------ workers
 _SCENES: dict[str, Scene] = {}
-_ENVS: dict[tuple[int, str, int], SourceLocEnv] = {}
+_ENVS: dict[tuple[int, str, int, str], SourceLocEnv] = {}
+_CKPT_OBS: dict[str, str] = {}
 
 
 def _init_worker() -> None:
@@ -146,12 +147,18 @@ def _worker(task: dict) -> dict:
     if mode not in _SCENES:
         _SCENES[mode] = load_scene(mode)
     max_steps = int(task.get("max_steps") or default_max_steps(mode))
-    key = (int(task["n_drones"]), mode, max_steps)
-    if key not in _ENVS:
-        _ENVS[key] = make_env(_SCENES[mode], key[0], mode, max_steps)
-    env = _ENVS[key]
     spec = EpisodeSpec(**task["spec"])
     kw = task.get("policy_kw", {}).get(task["method"], {})
+    obs_version = "v1"
+    if "checkpoint" in kw:                                             # a trained PPO policy needs the observation version it was trained on
+        if kw["checkpoint"] not in _CKPT_OBS:
+            from srcloc_env.rl.ppo_policy import load_checkpoint
+            _CKPT_OBS[kw["checkpoint"]] = str(load_checkpoint(kw["checkpoint"]).get("obs_version", "v1"))
+        obs_version = _CKPT_OBS[kw["checkpoint"]]
+    key = (int(task["n_drones"]), mode, max_steps, obs_version)
+    if key not in _ENVS:
+        _ENVS[key] = make_env(_SCENES[mode], key[0], mode, max_steps, obs_version)
+    env = _ENVS[key]
     if "checkpoint" in kw:                                              # trained PPO checkpoint under an alias (rl/ppo_policy.py)
         from srcloc_env.rl.ppo_policy import PPOPolicy
         policy = PPOPolicy(kw["checkpoint"], alias=task["method"], deterministic=bool(kw.get("deterministic", config.PPO_EVAL_DETERMINISTIC)))

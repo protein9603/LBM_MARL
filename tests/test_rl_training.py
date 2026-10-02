@@ -84,7 +84,8 @@ class _FakePool:
 
     def __init__(self, n_drones, run_seed, n_procs, episode_idx=None, env_kw=None):   # noqa: ANN001
         _FakePool.last_env_kw = env_kw
-        self.col = RolloutCollector(make_train_env(self.scene, self.scene.reflected_scene(), n_drones, **KW), run_seed, 0, (episode_idx or [0])[0])
+        extra = {"obs_version": env_kw["obs_version"]} if env_kw and "obs_version" in env_kw else {}
+        self.col = RolloutCollector(make_train_env(self.scene, self.scene.reflected_scene(), n_drones, **{**KW, **extra}), run_seed, 0, (episode_idx or [0])[0])
 
     def collect(self, net, n_steps, iteration):   # noqa: ANN001
         return [self.col.collect(net, n_steps, iteration)]
@@ -222,3 +223,36 @@ def test_train_passes_the_source_start_and_ppo_options_and_logs_the_diagnostics(
     rows = _rows(tmp_path / "opt" / "train_log.csv")
     assert out["iterations"] == 2 and all(k in rows[0] for k in ("belief_cos", "contact_frac", "closest_m_ma", "n_success", "adv_std", "kl_stopped"))
     assert float(rows[0]["adv_std"]) > 0.0
+
+
+def test_observation_v2_layout_bounds_and_the_two_drone_dimension(scene):
+    env = make_train_env(scene, scene.reflected_scene(), 1, obs_version="v2", terminate_on_success=False, **{k: v for k, v in KW.items() if k not in ("terminate_on_success",)})
+    obs, _ = env.reset(seed=11)
+    assert env.obs_version == "v2" and obs.shape == (config.ENV_OBS_DIM_V2,) == (64,) and np.isfinite(obs).all()
+    assert obs[:3].sum() == pytest.approx(1.0, abs=1e-5) and set(np.unique(obs[3:6])) <= {0.0, 1.0}          # GMM weights and valid mask
+    assert obs[45] == 1.0 and obs[26] == pytest.approx(1.0, abs=1e-6)                                         # nothing detected yet, belief entropy H/H0 = 1
+    assert float(obs[18:26].max()) >= np.cos(np.pi / 8) - 1e-6                                              # some heading points within 22.5 degrees of the belief mean
+    rng = np.random.default_rng(0)
+    for _ in range(12):
+        obs, *_ = env.step(int(rng.choice(np.flatnonzero(env.action_mask()))))
+        assert np.abs(obs).max() <= config.ENV_OBS_BOUND and np.abs(obs[30:45]).max() <= 1.5                 # recent-measurement offsets are O(1) now (v1: 0.004)
+    env2 = make_train_env(scene, scene.reflected_scene(), 2, obs_version="v2", **KW)
+    o2, _ = env2.reset(seed=5)
+    assert o2.shape == (2, 67) == (2, config.agent_obs_dim("v2", 2))
+    env1 = make_train_env(scene, scene.reflected_scene(), 1, **KW)
+    assert env1.reset(seed=11)[0].shape == (config.ENV_OBS_DIM,) == (56,)                                      # v1 is unchanged
+
+
+def test_obs_version_is_trained_saved_and_checked_at_evaluation(scene, tmp_path, monkeypatch):
+    _run(["--run-name", "v2", "--procs", "0", "--n-steps", "32", "--out-root", str(tmp_path), "--no-ckpt-eval", "--n-drones", "2", "--total-steps", "32",
+          "--obs-version", "v2"], scene, monkeypatch)
+    assert _FakePool.last_env_kw["obs_version"] == "v2"
+    ck = torch.load(tmp_path / "v2" / "final.pt", map_location="cpu", weights_only=False)
+    assert ck["obs_version"] == "v2" and ck["learner"]["obs_dim"] == 67
+    spec = EpisodeSpec(episode_id=0, seed=7, source=1, frame=450, scale=1.0)
+    env_v2 = make_train_env(scene, scene.reflected_scene(), 2, obs_version="v2", **{**KW, "terminate_on_success": False})
+    rec, _ = run_episode(env_v2, PPOPolicy(tmp_path / "v2" / "final.pt"), spec)
+    assert 1 <= rec["steps"] <= 15 and rec["n_masked"] == 0                                                  # steps = first success step or the horizon
+    env_v1 = make_train_env(scene, scene.reflected_scene(), 2, **KW)
+    with pytest.raises(ValueError):
+        run_episode(env_v1, PPOPolicy(tmp_path / "v2" / "final.pt"), spec)                                     # v2 policy on a v1 observation

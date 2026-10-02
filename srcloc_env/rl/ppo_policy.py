@@ -32,15 +32,15 @@ class PPOPolicy(Policy):
         ck = load_checkpoint(checkpoint)
         self.net: ActorCritic = net_from_state(ck["learner"])
         self.net.eval()
-        self.meta = {k: ck.get(k) for k in ("iteration", "env_steps", "n_drones", "run_name", "truth_mode", "max_steps")}
+        self.meta = {k: ck.get(k) for k in ("iteration", "env_steps", "n_drones", "run_name", "truth_mode", "max_steps", "obs_version")}
         self.gen = torch.Generator().manual_seed(0)
 
     def reset(self, env, info: dict) -> None:   # noqa: ANN001
         n = int(getattr(env, "n_drones", 1))
-        d = int(config.ENV_OBS_DIM + config.ENV_TEAMMATE_DIM * (n - 1))
+        d = int(getattr(env, "agent_obs_dim", env.obs_dim))
         if d != self.net.obs_dim:
             raise ValueError(f"checkpoint {self.checkpoint} expects {self.net.obs_dim} observation inputs, the {n}-drone environment gives {d}")
-        for key, val in ("truth_mode", getattr(env, "truth_mode", None)), ("max_steps", getattr(env, "max_steps", None)):
+        for key, val in ("truth_mode", getattr(env, "truth_mode", None)), ("max_steps", getattr(env, "max_steps", None)), ("obs_version", getattr(env, "obs_version", None)):
             if self.meta.get(key) is not None and val is not None and self.meta[key] != val:
                 warnings.warn(f"checkpoint {self.checkpoint} was trained with {key} = {self.meta[key]} but is evaluated with {key} = {val}", stacklevel=2)
         seed = np.random.SeedSequence([int(info["source"]), int(info["frame"]), int(round(float(info["scale"]) * 1e6)), 13])

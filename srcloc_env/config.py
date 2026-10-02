@@ -647,3 +647,25 @@ R3D_PRESETS = {"final": {"width": 1920, "height": 1080, "stride": 1, "fps": 30, 
 
 # D12 - diagnostics and training options of the recovery plan (docs/training_failure_analysis_and_plan.md)
 DIAG_CONTACT_COUNTS = 50              # a measurement of at least this many counts is a real plume contact (background 20 cps: false-alarm probability about 1e-8) [D12 diagnostic]
+
+
+# D12 - observation version v2 (recovery plan step 1/2, user decision 2026-10-02): egocentric, well-scaled features instead of the absolute GMM
+# means/covariances (episode fingerprints) and the dead measurement offsets of v1.  Layout in env/source_env.py (module docstring).
+ENV_OBS_VERSIONS = ("v1", "v2")
+ENV_OBS_DIM_V2 = 3 + 3 + 3 + 3 * 3 + DRONE_N_HEADINGS + 1 + 3 + 3 * ENV_N_RECENT + 1 + 2 + DRONE_N_HEADINGS + DRONE_N_HEADINGS   # 64
+ENV_V2_REC_NORM_M = DRONE_STEP_M * ENV_N_RECENT   # 25 m: offsets of the last 5 measurements from the drone are at most 4 steps = 20 m (v1 divided by 1000 m: values of order 0.004)
+ENV_V2_LOGSIGMA_REF_M = 10.0                      # component spread feature log10(sigma / 10 m): prior about 1.4, success level (30 m) 0.5
+ENV_V2_DIST_REF_M = 50.0                          # distance feature log10(1 + distance / 50 m)
+ENV_V2_DET_NORM_STEPS = 50                        # steps since the last detection / 50 (1.0 while nothing was ever detected)
+
+
+def env_obs_dim(version: str = "v1") -> int:
+    """Observation dimension of one drone WITHOUT the teammate block."""
+    if version not in ENV_OBS_VERSIONS:
+        raise ValueError(f"obs_version must be one of {ENV_OBS_VERSIONS}, got {version!r}")
+    return ENV_OBS_DIM_V2 if version == "v2" else ENV_OBS_DIM
+
+
+def agent_obs_dim(version: str, n_drones: int) -> int:
+    """Observation dimension of one agent of an n-drone team (teammate block of ENV_TEAMMATE_DIM per teammate)."""
+    return env_obs_dim(version) + ENV_TEAMMATE_DIM * (int(n_drones) - 1)

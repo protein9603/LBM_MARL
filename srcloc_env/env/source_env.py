@@ -17,6 +17,13 @@ Observation (config.ENV_OBS_DIM = 56; plan 4.5):
     [45]     min(1, steps since the last Currie detection / ENV_DETECTION_NORM_STEPS)
     [45+1:48) LBM wind (u, v) at the drone / ENV_WIND_NORM (15 m wind, field/wind.py)
     [48:56)  8-heading building distances / RAY_MAX_RANGE_M (ObstacleMap.ray_distances, E, NE, ..., SE)
+Observation version v2 (obs_version="v2", config.ENV_OBS_DIM_V2 = 64; recovery plan D12): egocentric and O(1) instead of the absolute
+    GMM means/covariances (which acted as episode fingerprints) and the 1000 m-scaled measurement offsets (values of order 0.004):
+    [0:3) GMM weights, [3:6) valid mask, [6:9) log10(sigma_k / 10 m) with sigma_k = sqrt(max(sxx, syy)),
+    [9:18) per component (unit bearing to its mean cos, sin; log10(1 + distance / 50 m)), [18:26) cos(heading_j, bearing to the TOP component),
+    [26] H / H_0 (normalised belief entropy), [27:30) own position and remaining time as in v1,
+    [30:45) last 5 measurements (normalised log count, dx / 25 m, dy / 25 m), [45] steps since the last detection / 50 (1.0 while none yet),
+    [46:48) wind (u, v) / 10, [48:56) wind projected on the 8 headings, [56:64) 8 building distances / RAY_MAX_RANGE_M.
 Reward (plan 4.5): ENV_REWARD_TIME + ENV_REWARD_INFO x (H_{t-1} - H_t) / H_0 + ENV_REWARD_EXIT x [domain exit]
     + terminal: success ENV_REWARD_SUCCESS; timeout -min(error, ENV_FAIL_ERROR_CAP_M) / ENV_FAIL_ERROR_SCALE_M.
     H = RBPF.entropy_xy (20 m cell weighted histogram), H_0 = entropy of the obstacle-aware prior.
@@ -49,7 +56,7 @@ import numpy as np
 from gymnasium import spaces
 
 from srcloc_env import config
-from srcloc_env.env.drone import ACTION_STAY, DroneKinematics, ObstacleMap
+from srcloc_env.env.drone import ACTION_STAY, DroneKinematics, ObstacleMap, heading_unit_vectors
 from srcloc_env.field.concentration_field import LdmSlabBackend
 from srcloc_env.field.wind import WindField
 from srcloc_env.pf.gmm_summary import GmmSummary, summarise_pf
@@ -156,6 +163,7 @@ class SourceLocEnv(gym.Env):
                  t2_files_per_step: float = config.T1_4_MODE_T2_FILES_PER_STEP,
                  scale_range: tuple[float, float] = config.SENSOR_SCALE_RANGE,
                  start_min_dist: float = config.ENV_START_MIN_DIST_M, start_max_dist: float = float("inf"),
+                 obs_version: str = "v1",
                  start_plume_frac: float = config.ENV_START_PLUME_FRAC,
                  prior_x: tuple[float, float] = config.PF_PRIOR_X, prior_y: tuple[float, float] = config.PF_PRIOR_Y,
                  likelihood: str | None = None, nb_r: float = config.PF_NB_DISPERSION_R,
@@ -202,7 +210,8 @@ class SourceLocEnv(gym.Env):
         self.success_sigma, self.success_error = float(success_sigma), float(success_error)
         self.terminate_on_success = bool(terminate_on_success)
         self.n_recent = int(config.ENV_N_RECENT)
-        self.obs_dim = int(config.ENV_OBS_DIM)
+        self.obs_version = str(obs_version)
+        self.obs_dim = int(config.env_obs_dim(self.obs_version))        # v1: 56, v2: 64 (module docstring)
         self.observation_space = spaces.Box(-config.ENV_OBS_BOUND, config.ENV_OBS_BOUND, shape=(self.obs_dim,),
                                             dtype=np.float32)
         self.action_space = spaces.Discrete(config.DRONE_N_ACTIONS)
@@ -224,6 +233,7 @@ class SourceLocEnv(gym.Env):
         self.h0 = self.h_prev = 1.0
         self._recent: list[tuple[float, float, float]] = []
         self.steps_since_detection = 0
+        self._seen_det = False                                           # a detection happened in this episode (observation v2)
         self._rng_pf = self._rng_det = self._rng_gmm = np.random.default_rng(0)
         self.last_timing: dict[str, float] = {}
 
@@ -305,6 +315,8 @@ class SourceLocEnv(gym.Env):
         self.gmm = summarise_pf(self.pf, rng=self._rng_gmm, n_iter=self.gmm_iters, init=init)
 
     def _observation(self) -> np.ndarray:
+        if self.obs_version == "v2":
+            return self._observation_v2()
         x, y = self.xy
         obs = np.empty(self.obs_dim, dtype=np.float64)
         obs[:config.GMM_VECTOR_DIM] = self.gmm.to_vector(self.xy)
@@ -320,6 +332,53 @@ class SourceLocEnv(gym.Env):
         k += 1
         obs[k:k + 2] = self.scene.wind.uv_at(self.xy, self.z)[0] / config.ENV_WIND_NORM
         k += 2
+        obs[k:k + config.DRONE_N_HEADINGS] = self.scene.obstacles.ray_distances(self.xy, self.z)[0] / config.RAY_MAX_RANGE_M
+        k += config.DRONE_N_HEADINGS
+        assert k == self.obs_dim
+        return np.clip(obs, -config.ENV_OBS_BOUND, config.ENV_OBS_BOUND).astype(np.float32)
+
+    def _observation_v2(self) -> np.ndarray:
+        """Observation version v2 (module docstring): egocentric, bounded features; all component features are 0 for invalid components."""
+        x, y = self.xy
+        g = self.gmm
+        K = config.GMM_K
+        valid = np.asarray(g.mask, dtype=bool)
+        obs = np.zeros(self.obs_dim, dtype=np.float64)
+        k = 0
+        obs[k:k + K] = np.where(valid, g.weights, 0.0)
+        k += K
+        obs[k:k + K] = valid.astype(float)
+        k += K
+        sig = np.sqrt(np.maximum(g.covs[:, 0, 0], g.covs[:, 1, 1]))
+        obs[k:k + K] = np.where(valid, np.log10(np.maximum(sig, 1.0) / config.ENV_V2_LOGSIGMA_REF_M), 0.0)
+        k += K
+        rel = g.means - self.xy[None, :]
+        dist = np.hypot(rel[:, 0], rel[:, 1])
+        ok = valid & (dist >= 1.0)
+        unit = np.zeros((K, 2))
+        unit[ok] = rel[ok] / dist[ok, None]
+        comp = np.column_stack([unit, np.where(ok, np.log10(1.0 + dist / config.ENV_V2_DIST_REF_M), 0.0)])
+        obs[k:k + 3 * K] = comp.ravel()
+        k += 3 * K
+        heads = heading_unit_vectors()
+        obs[k:k + config.DRONE_N_HEADINGS] = heads @ unit[0]
+        k += config.DRONE_N_HEADINGS
+        obs[k] = min(2.0, max(0.0, self.h_prev / max(self.h0, 1e-9)))
+        k += 1
+        obs[k:k + 3] = (x / config.GMM_NORM_XY[0], y / config.GMM_NORM_XY[1], 1.0 - self.t / self.max_steps)
+        k += 3
+        rec = np.zeros((self.n_recent, 3))
+        for i, (yn, mx, my) in enumerate(reversed(self._recent[-self.n_recent:])):
+            rec[i] = (yn, (mx - x) / config.ENV_V2_REC_NORM_M, (my - y) / config.ENV_V2_REC_NORM_M)
+        obs[k:k + 3 * self.n_recent] = rec.ravel()
+        k += 3 * self.n_recent
+        obs[k] = 1.0 if not self._seen_det else min(1.0, self.steps_since_detection / config.ENV_V2_DET_NORM_STEPS)
+        k += 1
+        uv = self.scene.wind.uv_at(self.xy, self.z)[0] / config.ENV_WIND_NORM
+        obs[k:k + 2] = uv
+        k += 2
+        obs[k:k + config.DRONE_N_HEADINGS] = heads @ uv
+        k += config.DRONE_N_HEADINGS
         obs[k:k + config.DRONE_N_HEADINGS] = self.scene.obstacles.ray_distances(self.xy, self.z)[0] / config.RAY_MAX_RANGE_M
         k += config.DRONE_N_HEADINGS
         assert k == self.obs_dim
@@ -376,6 +435,7 @@ class SourceLocEnv(gym.Env):
         self.h_prev = self.h0
         self._recent = []
         self.steps_since_detection = 0
+        self._seen_det = False                                           # a detection happened in this episode (observation v2)
         self.gmm = None                                # no warm start across episodes
         self._refresh_gmm()
         self.last_timing = {}
@@ -402,7 +462,9 @@ class SourceLocEnv(gym.Env):
         self._recent.append((float(self.det.normalise(y)), float(self.xy[0]), float(self.xy[1])))
         if len(self._recent) > self.n_recent:
             del self._recent[:-self.n_recent]
-        self.steps_since_detection = 0 if bool(self.det.is_detection(y)) else self.steps_since_detection + 1
+        hit = bool(self.det.is_detection(y))
+        self.steps_since_detection = 0 if hit else self.steps_since_detection + 1
+        self._seen_det = self._seen_det or hit
         self.t += 1
         h = self.pf.entropy_xy()
         gain = (self.h_prev - h) / self.h0

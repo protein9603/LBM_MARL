@@ -6,7 +6,7 @@ observations for a parameter-shared policy:
 
     obs[i] = SourceLocEnv observation of drone i (56)  +  for every teammate j != i (ascending j):
              ((x_j - x_i) / 1000, (y_j - y_i) / 1000, teammate's most recent normalised log count)      -> 56 + 3 (n - 1)
-    (2 drones 59, 3 drones 62; config.ENV_TEAMMATE_DIM = 3)
+    (v1: 2 drones 59, 3 drones 62; v2: 67 / 70; config.agent_obs_dim; config.ENV_TEAMMATE_DIM = 3)
 
 Step: actions (n,) -> each drone in index order: mask (DroneKinematics; a masked action is a stay), move, one count
 measurement at its own position, RBPF.update; then ONE entropy evaluation, ONE GMM refresh and ONE team reward
@@ -51,6 +51,7 @@ class MultiDroneEnv(SourceLocEnv):
         self.xys = np.zeros((self.n_drones, 2))
         self._recents: list[list[tuple[float, float, float]]] = [[] for _ in range(self.n_drones)]
         self._since_det = np.zeros(self.n_drones, dtype=np.int64)
+        self._seen = np.zeros(self.n_drones, dtype=bool)
         self._last_count_norm = np.zeros(self.n_drones)
 
     # ------------------------------------------------------------------ per-drone state swapping
@@ -58,11 +59,13 @@ class MultiDroneEnv(SourceLocEnv):
         self.xy = self.xys[i].copy()
         self._recent = self._recents[i]
         self.steps_since_detection = int(self._since_det[i])
+        self._seen_det = bool(self._seen[i])
 
     def _swap_out(self, i: int) -> None:
         self.xys[i] = self.xy
         self._recents[i] = self._recent
         self._since_det[i] = self.steps_since_detection
+        self._seen[i] = self._seen_det
 
     def action_masks(self) -> np.ndarray:
         """(n, 9) bool: allowed actions of every drone at its current position."""
@@ -128,6 +131,7 @@ class MultiDroneEnv(SourceLocEnv):
         self.start_type = start_type0
         self._recents = [[] for _ in range(self.n_drones)]
         self._since_det = np.zeros(self.n_drones, dtype=np.int64)
+        self._seen = np.zeros(self.n_drones, dtype=bool)
         self._last_count_norm = np.zeros(self.n_drones)
         self._swap_in(0)
         return self._observations(), self._info(success=False, y=[None] * self.n_drones)
@@ -158,7 +162,9 @@ class MultiDroneEnv(SourceLocEnv):
             self._recent.append((yn, float(self.xy[0]), float(self.xy[1])))
             if len(self._recent) > self.n_recent:
                 del self._recent[:-self.n_recent]
-            self.steps_since_detection = 0 if bool(self.det.is_detection(y)) else self.steps_since_detection + 1
+            hit = bool(self.det.is_detection(y))
+            self.steps_since_detection = 0 if hit else self.steps_since_detection + 1
+            self._seen_det = self._seen_det or hit
             self._last_count_norm[i] = yn
             self._swap_out(i)
             applied.append(ok); ys.append(y); dens.append(d)
