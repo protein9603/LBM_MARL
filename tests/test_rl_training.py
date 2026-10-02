@@ -256,3 +256,23 @@ def test_obs_version_is_trained_saved_and_checked_at_evaluation(scene, tmp_path,
     env_v1 = make_train_env(scene, scene.reflected_scene(), 2, **KW)
     with pytest.raises(ValueError):
         run_episode(env_v1, PPOPolicy(tmp_path / "v2" / "final.pt"), spec)                                     # v2 policy on a v1 observation
+
+
+def test_privileged_features_are_critic_only_and_train_saves_and_checks_the_options(scene, tmp_path, monkeypatch):
+    env = make_train_env(scene, scene.reflected_scene(), 2, **KW)
+    env.reset(seed=3, options={"source": 1, "reflect": False})
+    pv = env.privileged()
+    assert pv.shape == (2, config.ENV_PRIV_DIM) and pv.dtype == np.float32
+    rel = env.truth_xy - env.xys[0]
+    assert pv[0, 0] == pytest.approx(rel[0] / 1000.0, abs=1e-6) and pv[0, 2] == pytest.approx(np.log10(1.0 + np.hypot(*rel) / 50.0), abs=1e-5)
+    assert env.reset(seed=3, options={"source": 1, "reflect": False})[0].shape == (2, config.agent_obs_dim("v1", 2))      # the observation does not contain them
+    base = ["--run-name", "pv", "--procs", "0", "--n-steps", "32", "--out-root", str(tmp_path), "--no-ckpt-eval", "--n-drones", "2", "--priv-critic", "--value-norm"]
+    _run(base + ["--total-steps", "64"], scene, monkeypatch)
+    ck = torch.load(tmp_path / "pv" / "final.pt", map_location="cpu", weights_only=False)
+    assert ck["learner"]["priv_dim"] == config.ENV_PRIV_DIM and ck["learner"]["value_norm"] is True
+    rows = _rows(tmp_path / "pv" / "train_log.csv")
+    assert len(rows) == 2 and np.isfinite(float(rows[-1]["value_loss"]))
+    _run(base + ["--total-steps", "96", "--resume"], scene, monkeypatch)                                                   # resume keeps the critic type
+    with pytest.raises(ValueError, match="priv-critic"):
+        _run(["--run-name", "pv2", "--procs", "0", "--n-steps", "32", "--out-root", str(tmp_path), "--no-ckpt-eval", "--n-drones", "2",
+              "--total-steps", "32", "--init-from", str(tmp_path / "pv" / "final.pt")], scene, monkeypatch)                # init from a privileged critic without the flag

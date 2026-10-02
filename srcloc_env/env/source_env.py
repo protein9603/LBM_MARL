@@ -163,7 +163,8 @@ class SourceLocEnv(gym.Env):
                  t2_files_per_step: float = config.T1_4_MODE_T2_FILES_PER_STEP,
                  scale_range: tuple[float, float] = config.SENSOR_SCALE_RANGE,
                  start_min_dist: float = config.ENV_START_MIN_DIST_M, start_max_dist: float = float("inf"),
-                 obs_version: str = "v1",
+                 obs_version: str = "v1", fail_error_cap_m: float = config.ENV_FAIL_ERROR_CAP_M, shaping: str = "none", shaping_weight: float = 1.0,
+                 shaping_cap_m: float = 400.0,
                  start_plume_frac: float = config.ENV_START_PLUME_FRAC,
                  prior_x: tuple[float, float] = config.PF_PRIOR_X, prior_y: tuple[float, float] = config.PF_PRIOR_Y,
                  likelihood: str | None = None, nb_r: float = config.PF_NB_DISPERSION_R,
@@ -211,6 +212,10 @@ class SourceLocEnv(gym.Env):
         self.terminate_on_success = bool(terminate_on_success)
         self.n_recent = int(config.ENV_N_RECENT)
         self.obs_version = str(obs_version)
+        if shaping not in ("none", "potential"):
+            raise ValueError("shaping must be none or potential")
+        self.fail_error_cap_m, self.shaping = float(fail_error_cap_m), shaping            # TRAINING-ONLY reward options (D12); evaluation environments keep the defaults
+        self.shaping_weight, self.shaping_cap_m, self._phi_prev = float(shaping_weight), float(shaping_cap_m), 0.0
         self.obs_dim = int(config.env_obs_dim(self.obs_version))        # v1: 56, v2: 64 (module docstring)
         self.observation_space = spaces.Box(-config.ENV_OBS_BOUND, config.ENV_OBS_BOUND, shape=(self.obs_dim,),
                                             dtype=np.float32)
@@ -384,6 +389,40 @@ class SourceLocEnv(gym.Env):
         assert k == self.obs_dim
         return np.clip(obs, -config.ENV_OBS_BOUND, config.ENV_OBS_BOUND).astype(np.float32)
 
+    def privileged(self) -> np.ndarray:
+        """(1, config.ENV_PRIV_DIM) TRAINING-ONLY critic features of the drone: (truth - drone) / 1000 (2), log10(1 + distance / 50 m), log10(sensor scale),
+        (truth frame - 400) / 200.  Never part of the observation (asymmetric actor-critic, D12)."""
+        return self._privileged_of(self.xy)[None, :]
+
+    def _privileged_of(self, xy: np.ndarray) -> np.ndarray:
+        rel = self.truth_xy - np.asarray(xy, dtype=float)
+        d = float(np.hypot(*rel))
+        return np.array([rel[0] / 1000.0, rel[1] / 1000.0, np.log10(1.0 + d / 50.0), np.log10(self.scale), (self.frame_at(self.t) - 400.0) / 200.0], dtype=np.float32)
+
+    def _potential(self) -> float:
+        """Shaping potential Phi = -weight x E_w[min(|x_i - x*|, cap)] / 100 over the PF particles (belief-weighted distance to the TRUE source;
+        truth is used only inside the training reward, never in the observation).  0 when shaping is off."""
+        if self.shaping == "none":
+            return 0.0
+        d = np.minimum(np.hypot(*(self.pf.xy - self.truth_xy).T), self.shaping_cap_m)
+        return -self.shaping_weight * float(self.pf.weights() @ d) / config.ENV_FAIL_ERROR_SCALE_M
+
+    def _reward(self, gain: float, exited: bool, success: bool, done: bool, err: float) -> tuple[float, float]:
+        """(reward, shaping part).  Shaping F = Phi(s') - Phi(s) with Phi = 0 at the end of the episode (Ng et al. 1999: the optimal policy is unchanged)."""
+        reward = config.ENV_REWARD_TIME + config.ENV_REWARD_INFO * gain
+        if exited:
+            reward += config.ENV_REWARD_EXIT
+        if success:
+            reward += config.ENV_REWARD_SUCCESS
+        elif done and not success:
+            reward -= min(err, self.fail_error_cap_m) / config.ENV_FAIL_ERROR_SCALE_M
+        shaped = 0.0
+        if self.shaping != "none":
+            phi = 0.0 if done else self._potential()
+            shaped, self._phi_prev = phi - self._phi_prev, phi
+            reward += shaped
+        return reward, shaped
+
     def _map_error(self) -> float:
         return float(np.hypot(*(self.pf.map_estimate() - self.truth_xy)))
 
@@ -432,6 +471,7 @@ class SourceLocEnv(gym.Env):
                        background=self.det.background, T=self.det.T,                  # likelihood mean = (kappa g + b) T of THIS detector
                        kappa_ref=config.KAPPA_REF * self.det.k0 / config.SENSOR_K0)   # grid centred on k0 sqrt(q_A q_B)
         self.h0 = max(self.pf.entropy_xy(), 1e-9)
+        self._phi_prev = self._potential()
         self.h_prev = self.h0
         self._recent = []
         self.steps_since_detection = 0
@@ -480,17 +520,11 @@ class SourceLocEnv(gym.Env):
         strict = bool(gmm_refreshed and sigma < config.SUCCESS_SIGMA_M and err < config.SUCCESS_ERROR_M)
         terminated = (success and self.terminate_on_success) or exited
         truncated = (not terminated) and self.t >= self.max_steps
-        reward = config.ENV_REWARD_TIME + config.ENV_REWARD_INFO * gain
-        if exited:
-            reward += config.ENV_REWARD_EXIT
-        if success:
-            reward += config.ENV_REWARD_SUCCESS
-        elif truncated or exited:
-            reward -= min(err, config.ENV_FAIL_ERROR_CAP_M) / config.ENV_FAIL_ERROR_SCALE_M
+        reward, shaped = self._reward(gain, exited, success, truncated or terminated, err)
         t0 = time.perf_counter()
         obs = self._observation()
         t_obs = time.perf_counter() - t0
         self.last_timing = {"pf_s": t_pf, "gmm_s": t_gmm, "obs_s": t_obs, "total_s": time.perf_counter() - t_all}
         info = self._info(success=success, success_strict=strict, y=y, density=dens, applied=applied, exited=exited, info_gain=gain,
-                          gmm_refreshed=gmm_refreshed)   # timing stays in self.last_timing (info must be seed-deterministic, env_checker)
+                          gmm_refreshed=gmm_refreshed, shaping_reward=shaped)   # timing stays in self.last_timing (info must be seed-deterministic, env_checker)
         return obs, float(reward), terminated, truncated, info

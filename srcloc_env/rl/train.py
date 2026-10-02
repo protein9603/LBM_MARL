@@ -33,7 +33,7 @@ LOG_FIELDS = ["iteration", "env_steps", "wall_s", "rollout_s", "update_s", "step
               "return_ma", "length_ma", "entropy_drop_ma", "final_error_ma", "policy_loss", "value_loss", "entropy", "approx_kl",
               "clip_frac", "explained_var", "masked_share", "applied_masked", "kl_stopped", "belief_cos", "contact_frac", "closest_m_ma", "n_success", "adv_std"]
 EP_FIELDS = ["env_steps", "proc", "episode_idx", "source", "reflected", "start_type", "success", "success_strict", "truncated", "length",
-             "ret", "ret_info", "ret_time", "ret_terminal", "final_error_m", "top_sigma_m", "entropy_drop", "closest_m", "contact_steps"]
+             "ret", "ret_info", "ret_time", "ret_shaping", "ret_terminal", "final_error_m", "top_sigma_m", "entropy_drop", "closest_m", "contact_steps"]
 
 
 def _git_commit() -> str:
@@ -92,6 +92,10 @@ def train(a: argparse.Namespace) -> dict[str, Any]:
         env_kw["sources"] = tuple(int(x) for x in a.sources)
     if a.start_plume_frac is not None:
         env_kw["start_plume_frac"] = float(a.start_plume_frac)
+    if a.fail_cap_m is not None:
+        env_kw["fail_error_cap_m"] = float(a.fail_cap_m)
+    if a.shaping != "none":
+        env_kw.update({"shaping": a.shaping, "shaping_weight": float(a.shaping_weight), "shaping_cap_m": float(a.shaping_cap_m)})
     if a.start_min_dist is not None:
         env_kw["start_min_dist"] = float(a.start_min_dist)
     if a.start_max_dist is not None:
@@ -122,7 +126,9 @@ def train(a: argparse.Namespace) -> dict[str, Any]:
             print(f"[train] WARNING: --init-from checkpoint was trained in truth mode {ck0_mode}, this run uses {mode}", flush=True)
         init_note = f"initialised from {a.init_from} (input widened {net0.obs_dim} -> {obs_dim})"
     else:
-        net = ActorCritic(obs_dim)
+        net = ActorCritic(obs_dim, priv_dim=config.ENV_PRIV_DIM if a.priv_critic else 0, value_norm=bool(a.value_norm))
+    if (net.priv_dim > 0) != bool(a.priv_critic) or net.value_norm != bool(a.value_norm):
+        raise ValueError(f"--priv-critic / --value-norm ({bool(a.priv_critic)} / {bool(a.value_norm)}) differ from the network that is resumed or used for --init-from ({net.priv_dim > 0} / {net.value_norm})")
     if net.obs_dim != obs_dim:
         raise ValueError(f"network inputs {net.obs_dim} do not match {n} drone(s) ({obs_dim})")
     learner = PPOLearner(net, cfg, seed=int(a.run_seed) * 100_003 + it)
@@ -224,7 +230,13 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--truth-mode", choices=list(config.ENV_MODES), default=config.ENV_TRUTH_MODE_DEFAULT,
                     help="F = one frozen frame per episode, T2 = time-varying truth (frame 400 + t, D11)")
     ap.add_argument("--max-steps", type=int, default=0, help="episode horizon (0 = 300 in Mode F, config.T2_MAX_STEPS in Mode T2)")
+    ap.add_argument("--priv-critic", action="store_true", help="asymmetric critic that also sees training-only privileged features (truth relative to the drone, scale, frame); the actor is unchanged")
+    ap.add_argument("--value-norm", action="store_true", help="normalise the critic targets by running return statistics (MAPPO ValueNorm)")
     ap.add_argument("--obs-version", choices=list(config.ENV_OBS_VERSIONS), default="v1", help="v1 = original observation (56 + 3 per teammate), v2 = egocentric observation (D12)")
+    ap.add_argument("--shaping", choices=["none", "potential"], default="none", help="TRAINING-ONLY potential-based shaping Phi = -E_w[min(distance of the PF particles to the true source, cap)]/100 (D12)")
+    ap.add_argument("--shaping-weight", type=float, default=1.0)
+    ap.add_argument("--shaping-cap-m", type=float, default=400.0)
+    ap.add_argument("--fail-cap-m", type=float, default=None, help="cap of the terminal failure error term in m (default 300; larger removes the saturation)")
     ap.add_argument("--sources", type=int, nargs="*", default=None, help="training sources (default config.TRAIN_SOURCES); the evaluation lists are unchanged")
     ap.add_argument("--start-plume-frac", type=float, default=None, help="probability that a drone starts inside the detectable plume region (default config.ENV_START_PLUME_FRAC)")
     ap.add_argument("--start-min-dist", type=float, default=None, help="minimum start distance from the source [m] (default 200)")

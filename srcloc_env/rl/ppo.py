@@ -47,11 +47,36 @@ def _mlp(sizes: Sequence[int], gain_hidden: float, gain_out: float) -> nn.Sequen
 class ActorCritic(nn.Module):
     """Separate actor (obs -> n_actions logits) and critic (obs -> value) MLPs."""
 
-    def __init__(self, obs_dim: int, n_actions: int = config.DRONE_N_ACTIONS, hidden: Sequence[int] = config.PPO_HIDDEN) -> None:
+    def __init__(self, obs_dim: int, n_actions: int = config.DRONE_N_ACTIONS, hidden: Sequence[int] = config.PPO_HIDDEN,
+                 priv_dim: int = 0, value_norm: bool = False) -> None:
         super().__init__()
         self.obs_dim, self.n_actions, self.hidden = int(obs_dim), int(n_actions), tuple(int(h) for h in hidden)
+        self.priv_dim, self.value_norm = int(priv_dim), bool(value_norm)
         self.actor = _mlp([self.obs_dim, *self.hidden, self.n_actions], config.PPO_ORTHO_GAIN_HIDDEN, config.PPO_ORTHO_GAIN_POLICY)
-        self.critic = _mlp([self.obs_dim, *self.hidden, 1], config.PPO_ORTHO_GAIN_HIDDEN, config.PPO_ORTHO_GAIN_VALUE)
+        # asymmetric critic (Pinto et al. 2018; Yu et al. 2022): the critic may also see TRAINING-ONLY privileged features (priv_dim); the actor never does
+        self.critic = _mlp([self.obs_dim + self.priv_dim, *self.hidden, 1], config.PPO_ORTHO_GAIN_HIDDEN, config.PPO_ORTHO_GAIN_VALUE)
+        if self.value_norm:                                          # running return statistics (debiased EMA); the critic output is in normalised units
+            for name in ("vn_m1", "vn_m2", "vn_debias"):
+                self.register_buffer(name, torch.zeros(()))
+
+    # ------------------------------------------------------------------ value normalisation (MAPPO ValueNorm style)
+    @property
+    def vn_mean(self) -> torch.Tensor:
+        return self.vn_m1 / self.vn_debias.clamp(min=1e-5)
+
+    @property
+    def vn_std(self) -> torch.Tensor:
+        mean = self.vn_mean
+        return (self.vn_m2 / self.vn_debias.clamp(min=1e-5) - mean * mean).clamp(min=1e-4).sqrt()
+
+    @torch.no_grad()
+    def update_value_stats(self, returns: torch.Tensor, beta: float = config.PPO_VALUE_NORM_BETA) -> None:
+        self.vn_m1.mul_(beta).add_((1.0 - beta) * returns.mean())
+        self.vn_m2.mul_(beta).add_((1.0 - beta) * (returns * returns).mean())
+        self.vn_debias.mul_(beta).add_(1.0 - beta)
+
+    def normalise_target(self, returns: torch.Tensor) -> torch.Tensor:
+        return (returns - self.vn_mean) / self.vn_std if self.value_norm else returns
 
     # ------------------------------------------------------------------ distribution
     def masked_logits(self, obs: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
@@ -59,38 +84,60 @@ class ActorCritic(nn.Module):
         logits = self.actor(obs).masked_fill(~mask, config.PPO_LOGIT_MASK_VALUE)
         return torch.log_softmax(logits, dim=-1)
 
-    def value(self, obs: torch.Tensor) -> torch.Tensor:
-        return self.critic(obs).squeeze(-1)
+    def _critic_in(self, obs: torch.Tensor, priv: torch.Tensor | None) -> torch.Tensor:
+        if self.priv_dim == 0:
+            return obs
+        if priv is None:
+            raise ValueError("this critic needs the privileged features")
+        return torch.cat([obs, priv], dim=-1)
+
+    def value_out(self, obs: torch.Tensor, priv: torch.Tensor | None = None) -> torch.Tensor:
+        """Critic output as trained (normalised units when value_norm)."""
+        return self.critic(self._critic_in(obs, priv)).squeeze(-1)
+
+    def value(self, obs: torch.Tensor, priv: torch.Tensor | None = None) -> torch.Tensor:
+        """Value estimate in return units."""
+        v = self.value_out(obs, priv)
+        return v * self.vn_std + self.vn_mean if self.value_norm else v
 
     def act(self, obs: torch.Tensor, mask: torch.Tensor, generator: torch.Generator | None = None,
-            deterministic: bool = False) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """(action, log-prob of the action, value) for a batch of observations (no gradient)."""
+            deterministic: bool = False, priv: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """(action, log-prob of the action, value) for a batch of observations (no gradient).  Without privileged features a privileged critic
+        returns zeros (evaluation never needs the value)."""
         with torch.no_grad():
             logp = self.masked_logits(obs, mask)
             if deterministic:
                 a = logp.argmax(dim=-1)
             else:
                 a = torch.multinomial(logp.exp(), 1, generator=generator).squeeze(-1)
-            return a, logp.gather(-1, a.unsqueeze(-1)).squeeze(-1), self.value(obs)
+            v = self.value(obs, priv) if (self.priv_dim == 0 or priv is not None) else torch.zeros(obs.shape[0])
+            return a, logp.gather(-1, a.unsqueeze(-1)).squeeze(-1), v
 
-    def evaluate(self, obs: torch.Tensor, mask: torch.Tensor, act: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """(log-prob of ``act``, entropy of the masked policy, value) with gradients."""
+    def evaluate(self, obs: torch.Tensor, mask: torch.Tensor, act: torch.Tensor,
+                 priv: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """(log-prob of ``act``, entropy of the masked policy, critic output in TRAINING units (normalised when value_norm)) with gradients."""
         logp = self.masked_logits(obs, mask)
         ent = -(logp.exp() * logp).sum(-1)
-        return logp.gather(-1, act.unsqueeze(-1)).squeeze(-1), ent, self.value(obs)
+        return logp.gather(-1, act.unsqueeze(-1)).squeeze(-1), ent, self.value_out(obs, priv)
 
     # ------------------------------------------------------------------ curriculum: widen the input (1 -> n drones)
     def widened(self, new_obs_dim: int) -> "ActorCritic":
         """Copy of this network that accepts ``new_obs_dim`` inputs.  The extra inputs (teammate features) get zero weights, so the
-        widened network computes exactly the same function while those inputs are ignored (M1 -> M2 initialisation)."""
+        widened network computes exactly the same function while those inputs are ignored (M1 -> M2 initialisation).  The privileged
+        critic inputs stay behind the observation inputs."""
         if new_obs_dim < self.obs_dim:
             raise ValueError("cannot narrow the input")
-        new = ActorCritic(new_obs_dim, self.n_actions, self.hidden)
+        new = ActorCritic(new_obs_dim, self.n_actions, self.hidden, self.priv_dim, self.value_norm)
         sd_old, sd_new = self.state_dict(), new.state_dict()
         for key, w in sd_old.items():
             if w.shape == sd_new[key].shape:
                 sd_new[key] = w.clone()
-            else:                                                   # first layer weight (hidden, obs_dim) of actor and critic
+            elif key == "critic.0.weight":                          # (hidden, obs_dim + priv_dim)
+                pad = torch.zeros_like(sd_new[key])
+                pad[:, :self.obs_dim] = w[:, :self.obs_dim]
+                pad[:, new_obs_dim:new_obs_dim + self.priv_dim] = w[:, self.obs_dim:]
+                sd_new[key] = pad
+            else:                                                   # first layer weight of the actor
                 pad = torch.zeros_like(sd_new[key])
                 pad[:, :self.obs_dim] = w
                 sd_new[key] = pad
@@ -149,12 +196,13 @@ class Batch:
     adv: torch.Tensor           # (N,) float32 (not yet standardised)
     ret: torch.Tensor           # (N,) float32
     val: torch.Tensor           # (N,) float32 behaviour value (diagnostic: explained variance)
+    priv: torch.Tensor | None = None   # (N, P) privileged critic features (training only), None for a symmetric critic
 
 
 def make_batch(rollouts: Sequence[dict[str, np.ndarray]], gamma: float, lam: float) -> Batch:
     """Rollouts (one dict per worker: obs (T, n, D), act (T, n), logp (T, n), val (T, n), mask (T, n, A), rew (T,), done (T,),
     last_val (n,)) -> GAE per worker, then one flat batch."""
-    cols: dict[str, list[np.ndarray]] = {k: [] for k in ("obs", "act", "logp", "mask", "adv", "ret", "val")}
+    cols: dict[str, list[np.ndarray]] = {k: [] for k in ("obs", "act", "logp", "mask", "adv", "ret", "val", "priv")}
     for r in rollouts:
         adv, ret = compute_gae(r["rew"], r["val"], r["done"], r["last_val"], gamma, lam)
         D, A = r["obs"].shape[-1], r["mask"].shape[-1]
@@ -165,11 +213,14 @@ def make_batch(rollouts: Sequence[dict[str, np.ndarray]], gamma: float, lam: flo
         cols["adv"].append(adv.reshape(-1))
         cols["ret"].append(ret.reshape(-1))
         cols["val"].append(r["val"].reshape(-1))
-    cat = {k: np.concatenate(v) for k, v in cols.items()}
+        if "priv" in r:
+            cols["priv"].append(r["priv"].reshape(-1, r["priv"].shape[-1]))
+    cat = {k: np.concatenate(v) for k, v in cols.items() if v}
     return Batch(obs=torch.from_numpy(cat["obs"].astype(np.float32)), act=torch.from_numpy(cat["act"].astype(np.int64)),
                  logp=torch.from_numpy(cat["logp"].astype(np.float32)), mask=torch.from_numpy(cat["mask"].astype(bool)),
                  adv=torch.from_numpy(cat["adv"].astype(np.float32)), ret=torch.from_numpy(cat["ret"].astype(np.float32)),
-                 val=torch.from_numpy(cat["val"].astype(np.float32)))
+                 val=torch.from_numpy(cat["val"].astype(np.float32)),
+                 priv=torch.from_numpy(cat["priv"].astype(np.float32)) if "priv" in cat else None)
 
 
 class PPOLearner:
@@ -188,6 +239,9 @@ class PPOLearner:
         adv = b.adv
         if c.adv_normalise:
             adv = (adv - adv.mean()) / (adv.std() + 1e-8)
+        if self.net.value_norm:
+            self.net.update_value_stats(b.ret)
+        target = self.net.normalise_target(b.ret)                    # critic target in training units
         stats: dict[str, list[float]] = {k: [] for k in ("policy_loss", "value_loss", "entropy", "approx_kl", "clip_frac")}
         self.net.train()
         stopped = False
@@ -197,12 +251,12 @@ class PPOLearner:
             perm = torch.randperm(n, generator=self.gen)
             for s in range(0, n, c.minibatch):
                 idx = perm[s:s + c.minibatch]
-                logp, ent, val = self.net.evaluate(b.obs[idx], b.mask[idx], b.act[idx])
+                logp, ent, val = self.net.evaluate(b.obs[idx], b.mask[idx], b.act[idx], None if b.priv is None else b.priv[idx])
                 log_ratio = logp - b.logp[idx]
                 ratio = log_ratio.exp()
                 a = adv[idx]
                 pg = torch.max(-a * ratio, -a * ratio.clamp(1.0 - c.clip, 1.0 + c.clip)).mean()
-                mse = (val - b.ret[idx]).pow(2).mean()
+                mse = (val - target[idx]).pow(2).mean()
                 actor_loss = pg - c.ent_coef * ent.mean()
                 critic_loss = c.vf_coef * mse
                 self.opt_actor.zero_grad(set_to_none=True)
@@ -231,7 +285,8 @@ class PPOLearner:
     # ------------------------------------------------------------------ persistence
     def state(self) -> dict[str, Any]:
         return {"net": self.net.state_dict(), "opt_actor": self.opt_actor.state_dict(), "opt_critic": self.opt_critic.state_dict(),
-                "obs_dim": self.net.obs_dim, "n_actions": self.net.n_actions, "hidden": list(self.net.hidden)}
+                "obs_dim": self.net.obs_dim, "n_actions": self.net.n_actions, "hidden": list(self.net.hidden),
+                "priv_dim": self.net.priv_dim, "value_norm": self.net.value_norm}
 
     def load_optimizers(self, st: dict[str, Any]) -> None:
         self.opt_actor.load_state_dict(st["opt_actor"])
@@ -239,6 +294,6 @@ class PPOLearner:
 
 
 def net_from_state(st: dict[str, Any]) -> ActorCritic:
-    net = ActorCritic(int(st["obs_dim"]), int(st["n_actions"]), tuple(st["hidden"]))
+    net = ActorCritic(int(st["obs_dim"]), int(st["n_actions"]), tuple(st["hidden"]), int(st.get("priv_dim", 0)), bool(st.get("value_norm", False)))
     net.load_state_dict(st["net"])
     return net

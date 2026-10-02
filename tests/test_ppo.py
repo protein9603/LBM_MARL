@@ -169,3 +169,37 @@ def test_target_kl_stops_the_remaining_epochs_early():
     assert st["kl_stopped"] == 1.0
     free = PPOLearner(ActorCritic(4, hidden=(16, 16)), PPOConfig(minibatch=32, epochs=6, ent_coef=0.0, lr=5e-2), seed=0).update(b)
     assert free["kl_stopped"] == 0.0
+
+
+def test_privileged_critic_is_critic_only_and_widening_keeps_the_function():
+    torch.manual_seed(4)
+    net = ActorCritic(10, hidden=(16, 16), priv_dim=5)
+    obs, priv = torch.randn(6, 10), torch.randn(6, 5)
+    mask = torch.ones(6, config.DRONE_N_ACTIONS, dtype=torch.bool)
+    with pytest.raises(ValueError):
+        net.value(obs)                                                       # the critic needs its privileged features
+    _, _, v0 = net.act(obs, mask)                                            # the actor path (evaluation) works without them; the value is a placeholder
+    assert torch.equal(v0, torch.zeros(6))
+    a0 = net.masked_logits(obs, mask)
+    assert not torch.allclose(net.value(obs, priv), net.value(obs, priv * 0.0))
+    wide = net.widened(13)
+    extra = torch.randn(6, 3) * 5.0
+    assert torch.allclose(wide.masked_logits(torch.cat([obs, extra], 1), mask), a0, atol=1e-6)
+    assert torch.allclose(wide.value(torch.cat([obs, extra], 1), priv), net.value(obs, priv), atol=1e-6)    # privileged columns kept behind the widened observation
+    st = PPOLearner(net, PPOConfig(), seed=0).state()
+    assert st["priv_dim"] == 5 and net_from_state(st).priv_dim == 5
+
+
+def test_value_norm_tracks_the_return_scale_and_update_uses_normalised_targets():
+    torch.manual_seed(5)
+    net = ActorCritic(4, hidden=(16, 16), value_norm=True)
+    learner = PPOLearner(net, PPOConfig(minibatch=128, epochs=2, ent_coef=0.0, lr=3e-3), seed=0)
+    gen = torch.Generator().manual_seed(6)
+    for _ in range(25):
+        b, _ = _bandit_batch(net, 256, gen)
+        b.ret = b.ret * 5.0 + 100.0                                          # returns far from zero and with a larger scale
+        st = learner.update(b)
+    assert float(net.vn_mean) == pytest.approx(102.0, abs=3.0) and 1.0 < float(net.vn_std) < 4.0
+    obs = torch.nn.functional.one_hot(torch.tensor([0, 1, 2]), 4).float()
+    assert 90.0 < float(net.value(obs).mean()) < 112.0                       # the critic reports values in return units
+    assert np.isfinite(st["value_loss"]) and st["value_loss"] < 50.0

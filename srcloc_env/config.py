@@ -669,3 +669,5 @@ def env_obs_dim(version: str = "v1") -> int:
 def agent_obs_dim(version: str, n_drones: int) -> int:
     """Observation dimension of one agent of an n-drone team (teammate block of ENV_TEAMMATE_DIM per teammate)."""
     return env_obs_dim(version) + ENV_TEAMMATE_DIM * (int(n_drones) - 1)
+PPO_VALUE_NORM_BETA = 0.9                 # debiased EMA factor of the return statistics, applied once per PPO iteration (ValueNorm of Yu et al. 2022) [D12]
+ENV_PRIV_DIM = 5                          # privileged critic features per drone: (truth - drone)/1000 (2), log10(1 + distance/50 m), log10(sensor scale), (frame - 400)/200 [D12]

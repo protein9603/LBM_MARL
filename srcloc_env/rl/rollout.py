@@ -74,6 +74,7 @@ class RolloutCollector:
         self.obs: np.ndarray | None = None
         self.ep_return = 0.0
         self.ep_info = 0.0
+        self.ep_shaping = 0.0
         self.ep_len = 0
         self.ep_closest = float("inf")
         self.ep_contact = 0
@@ -85,7 +86,7 @@ class RolloutCollector:
         obs, _ = self.env.reset(seed=episode_seed(self.run_seed, self.proc, self.episode_idx))
         self.episode_idx += 1
         self.obs = np.asarray(obs, dtype=np.float32).reshape(self.n, -1)
-        self.ep_return, self.ep_info, self.ep_len = 0.0, 0.0, 0
+        self.ep_return, self.ep_info, self.ep_shaping, self.ep_len = 0.0, 0.0, 0.0, 0
         self.ep_closest, self.ep_contact = float("inf"), 0
 
     def collect(self, net: ActorCritic, n_steps: int, iteration: int) -> dict[str, Any]:
@@ -104,7 +105,10 @@ class RolloutCollector:
         net.eval()
         for t in range(n_steps):
             mask = self._masks()
-            a, logp, v = net.act(torch.from_numpy(self.obs), torch.from_numpy(mask), gen)
+            priv = torch.from_numpy(self.env.privileged()) if net.priv_dim else None          # critic-only features (asymmetric critic)
+            if priv is not None:
+                buf.setdefault("priv", np.zeros((n_steps, self.n, net.priv_dim), np.float32))[t] = priv.numpy()
+            a, logp, v = net.act(torch.from_numpy(self.obs), torch.from_numpy(mask), gen, priv=priv)
             buf["obs"][t], buf["mask"][t] = self.obs, mask
             buf["act"][t], buf["logp"][t], buf["val"][t] = a.numpy(), logp.numpy(), v.numpy()
             masked_share += float(1.0 - mask.mean())
@@ -121,13 +125,14 @@ class RolloutCollector:
             n_applied_masked += sum(1 for x in applied if not x)          # must stay 0: the policy never samples a masked action
             self.ep_return += float(r)
             self.ep_info += config.ENV_REWARD_INFO * float(info["info_gain"])
+            self.ep_shaping += float(info.get("shaping_reward", 0.0))
             self.ep_len += 1
             buf["rew"][t] = r
             done = bool(term or trunc)
             buf["done"][t] = done
             if done:
                 episodes.append({"proc": self.proc, "episode_idx": self.episode_idx - 1, "ret": self.ep_return, "ret_info": self.ep_info, "ret_time": config.ENV_REWARD_TIME * self.ep_len,
-                                 "ret_terminal": self.ep_return - self.ep_info - config.ENV_REWARD_TIME * self.ep_len, "length": self.ep_len,
+                                 "ret_shaping": self.ep_shaping, "ret_terminal": self.ep_return - self.ep_info - self.ep_shaping - config.ENV_REWARD_TIME * self.ep_len, "length": self.ep_len,
                                  "success": bool(info["success"]), "success_strict": bool(info.get("success_strict", False)),
                                  "source": int(info["source"]), "reflected": bool(info["reflected"]), "start_type": info.get("start_type", ""),
                                  "final_error_m": float(info["map_error_m"]), "top_sigma_m": float(info["top_sigma_m"]),
@@ -137,7 +142,8 @@ class RolloutCollector:
             else:
                 self.obs = np.asarray(obs, dtype=np.float32).reshape(self.n, -1)
         with torch.no_grad():
-            buf["last_val"] = net.value(torch.from_numpy(self.obs)).numpy().astype(np.float64)
+            priv_last = torch.from_numpy(self.env.privileged()) if net.priv_dim else None
+            buf["last_val"] = net.value(torch.from_numpy(self.obs), priv_last).numpy().astype(np.float64)
         buf["val"] = buf["val"].astype(np.float64)
         buf["masked_share"] = masked_share / n_steps
         buf["applied_masked"] = n_applied_masked
@@ -150,13 +156,13 @@ class RolloutCollector:
 
 # ------------------------------------------------------------------------------------------ worker processes
 def _net_from_payload(p: dict[str, Any]) -> ActorCritic:
-    net = ActorCritic(int(p["obs_dim"]), int(p["n_actions"]), tuple(p["hidden"]))
+    net = ActorCritic(int(p["obs_dim"]), int(p["n_actions"]), tuple(p["hidden"]), int(p.get("priv_dim", 0)), bool(p.get("value_norm", False)))
     net.load_state_dict({k: torch.from_numpy(v) for k, v in p["state"].items()})
     return net
 
 
 def net_payload(net: ActorCritic) -> dict[str, Any]:
-    return {"obs_dim": net.obs_dim, "n_actions": net.n_actions, "hidden": list(net.hidden),
+    return {"obs_dim": net.obs_dim, "n_actions": net.n_actions, "hidden": list(net.hidden), "priv_dim": net.priv_dim, "value_norm": net.value_norm,
             "state": {k: v.detach().cpu().numpy().copy() for k, v in net.state_dict().items()}}
 
 

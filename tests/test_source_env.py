@@ -335,3 +335,35 @@ def test_start_max_dist_keeps_every_start_inside_the_distance_ring(scene):
             _, info = env.reset(seed=seed, options={"source": 1})
             d = float(np.hypot(*(info["drone_xy"] - info["truth_xy"])))
             assert 20.0 - 1e-6 <= d <= 60.0 + 1e-6, (frac, seed, d)
+
+
+def test_potential_shaping_telescopes_and_the_default_reward_is_unchanged(scene):
+    """Shaping F = Phi(s') - Phi(s) with Phi = 0 at the episode end sums to -Phi(s0) (policy invariance, Ng et al. 1999); fail_error_cap_m only
+    changes the terminal term; shaping='none' reproduces the original reward."""
+    kw = dict(terminate_on_success=False, max_steps=30)
+    base, shaped = _env(scene, **kw), _env(scene, shaping="potential", **kw)
+    _, i0 = base.reset(seed=4)
+    _, i1 = shaped.reset(seed=4)
+    phi0 = shaped._phi_prev
+    assert phi0 < 0.0 and base._phi_prev == 0.0
+    rb = rs = 0.0
+    rng = np.random.default_rng(1)
+    for _ in range(30):
+        a = int(rng.choice(np.flatnonzero(base.action_mask())))
+        _, r0, t0, u0, ib = base.step(a)
+        _, r1, t1, u1, is_ = shaped.step(a)
+        assert ib["shaping_reward"] == 0.0
+        rb, rs = rb + r0, rs + r1
+        if t0 or u0:
+            break
+    assert rs - rb == pytest.approx(-phi0, abs=1e-6)                          # total shaping = Phi(end) - Phi(start) = 0 - Phi(s0)
+    capped, uncapped = _env(scene, **kw), _env(scene, fail_error_cap_m=1000.0, **kw)
+    capped.reset(seed=4)
+    uncapped.reset(seed=4)
+    for _ in range(30):
+        a = int(np.flatnonzero(capped.action_mask())[0])
+        _, rc, tc, uc, _i = capped.step(a)
+        _, ru, tu, uu, _j = uncapped.step(a)
+        if tc or uc:
+            break
+    assert rc == pytest.approx(ru) or ru < rc                                   # the uncapped terminal term is never smaller in magnitude than the capped one

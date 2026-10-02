@@ -67,6 +67,10 @@ class MultiDroneEnv(SourceLocEnv):
         self._since_det[i] = self.steps_since_detection
         self._seen[i] = self._seen_det
 
+    def privileged(self) -> np.ndarray:
+        """(n, config.ENV_PRIV_DIM) training-only critic features of every drone (SourceLocEnv.privileged)."""
+        return np.vstack([self._privileged_of(self.xys[i]) for i in range(self.n_drones)])
+
     def action_masks(self) -> np.ndarray:
         """(n, 9) bool: allowed actions of every drone at its current position."""
         return np.vstack([self.kin.action_mask(self.xys[i]) for i in range(self.n_drones)])
@@ -184,18 +188,12 @@ class MultiDroneEnv(SourceLocEnv):
         strict = bool(gmm_refreshed and sigma < config.SUCCESS_SIGMA_M and err < config.SUCCESS_ERROR_M)
         terminated = (success and self.terminate_on_success) or exited
         truncated = (not terminated) and self.t >= self.max_steps
-        reward = config.ENV_REWARD_TIME + config.ENV_REWARD_INFO * gain
-        if exited:
-            reward += config.ENV_REWARD_EXIT
-        if success:
-            reward += config.ENV_REWARD_SUCCESS
-        elif truncated or exited:
-            reward -= min(err, config.ENV_FAIL_ERROR_CAP_M) / config.ENV_FAIL_ERROR_SCALE_M
+        reward, shaped = self._reward(gain, exited, success, truncated or terminated, err)
         t0 = time.perf_counter()
         obs = self._observations()
         t_obs = time.perf_counter() - t0
         self._swap_in(0)
         self.last_timing = {"pf_s": t_pf, "gmm_s": t_gmm, "obs_s": t_obs, "total_s": time.perf_counter() - t_all}
         info = self._info(success=success, success_strict=strict, y=ys, density=dens, applied=applied, exited=exited, info_gain=gain,
-                          gmm_refreshed=gmm_refreshed)
+                          gmm_refreshed=gmm_refreshed, shaping_reward=shaped)
         return obs, float(reward), terminated, truncated, info
