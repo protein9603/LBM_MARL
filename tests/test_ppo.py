@@ -157,3 +157,15 @@ def test_make_batch_flattens_agents_and_workers():
     b = make_batch([ro(0), ro(1), ro(2)], 0.99, 0.95)
     assert b.obs.shape == (3 * T * n, D) and b.act.shape == (3 * T * n,) and b.mask.shape == (3 * T * n, A)
     assert torch.isfinite(b.adv).all() and torch.isfinite(b.ret).all()
+
+
+def test_target_kl_stops_the_remaining_epochs_early():
+    torch.manual_seed(2)
+    net = ActorCritic(4, hidden=(16, 16))
+    learner = PPOLearner(net, PPOConfig(minibatch=32, epochs=6, ent_coef=0.0, lr=5e-2, target_kl=1e-4), seed=0)
+    gen = torch.Generator().manual_seed(3)
+    b, _ = _bandit_batch(net, 256, gen)
+    st = learner.update(b)
+    assert st["kl_stopped"] == 1.0
+    free = PPOLearner(ActorCritic(4, hidden=(16, 16)), PPOConfig(minibatch=32, epochs=6, ent_coef=0.0, lr=5e-2), seed=0).update(b)
+    assert free["kl_stopped"] == 0.0

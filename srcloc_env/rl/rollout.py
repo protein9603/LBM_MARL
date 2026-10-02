@@ -21,6 +21,7 @@ import numpy as np
 import torch
 
 from srcloc_env import config
+from srcloc_env.env.drone import ACTION_STAY, heading_unit_vectors
 from srcloc_env.env.multi_agent import MultiDroneEnv
 from srcloc_env.env.source_env import Scene, SourceLocEnv, default_max_steps, load_scene
 from srcloc_env.rl.ppo import ActorCritic
@@ -40,6 +41,26 @@ def episode_seed(run_seed: int, proc: int, episode_idx: int) -> int:
     return config.TRAIN_SEED_RUN_STRIDE * int(run_seed) + config.TRAIN_SEED_PROC_STRIDE * int(proc) + int(episode_idx)
 
 
+_HEADINGS = heading_unit_vectors()
+
+
+def belief_alignment(positions: np.ndarray, belief_mean: np.ndarray, actions: np.ndarray, min_dist_m: float = 1.0) -> tuple[float, int]:
+    """(sum of cosines, count): cosine between the heading of every moving drone's action and the direction from the drone to the top GMM
+    component mean (stay actions and drones within min_dist_m of the mean are skipped).  Random policy: expected 0, greedy-MAP: about 0.7
+    (D11 diagnostic: the PPO policy of the 2-drone T2 run had -0.05 .. +0.08)."""
+    total, count = 0.0, 0
+    for xy, a in zip(np.asarray(positions, dtype=float).reshape(-1, 2), np.asarray(actions).reshape(-1)):
+        if int(a) == ACTION_STAY:
+            continue
+        u = np.asarray(belief_mean, dtype=float) - xy
+        d = float(np.hypot(*u))
+        if d < min_dist_m:
+            continue
+        total += float(_HEADINGS[int(a)] @ u) / d
+        count += 1
+    return total, count
+
+
 def _rollout_generator(run_seed: int, proc: int, iteration: int) -> torch.Generator:
     seed = int(np.random.SeedSequence([int(run_seed), int(proc), int(iteration), 11]).generate_state(1)[0])
     return torch.Generator().manual_seed(seed)
@@ -54,6 +75,8 @@ class RolloutCollector:
         self.ep_return = 0.0
         self.ep_info = 0.0
         self.ep_len = 0
+        self.ep_closest = float("inf")
+        self.ep_contact = 0
 
     def _masks(self) -> np.ndarray:
         return self.env.action_masks() if self.n > 1 else self.env.action_mask()[None]
@@ -63,6 +86,7 @@ class RolloutCollector:
         self.episode_idx += 1
         self.obs = np.asarray(obs, dtype=np.float32).reshape(self.n, -1)
         self.ep_return, self.ep_info, self.ep_len = 0.0, 0.0, 0
+        self.ep_closest, self.ep_contact = float("inf"), 0
 
     def collect(self, net: ActorCritic, n_steps: int, iteration: int) -> dict[str, Any]:
         gen = _rollout_generator(self.run_seed, self.proc, iteration)
@@ -75,6 +99,7 @@ class RolloutCollector:
         episodes: list[dict[str, Any]] = []
         masked_share = 0.0
         n_applied_masked = 0
+        cos_sum, cos_n, contact_steps = 0.0, 0, 0
         t0 = time.perf_counter()
         net.eval()
         for t in range(n_steps):
@@ -84,7 +109,14 @@ class RolloutCollector:
             buf["act"][t], buf["logp"][t], buf["val"][t] = a.numpy(), logp.numpy(), v.numpy()
             masked_share += float(1.0 - mask.mean())
             acts = a.numpy()
+            pos = self.env.xys if self.n > 1 else self.env.xy[None]
+            c_s, c_n = belief_alignment(pos, self.env.gmm.means[0], acts)       # diagnostic: does the policy steer towards the belief mean?
+            cos_sum, cos_n = cos_sum + c_s, cos_n + c_n
             obs, r, term, trunc, info = self.env.step(acts if self.n > 1 else int(acts[0]))
+            ys = info["y"] if self.n > 1 else [info["y"]]
+            hit = any(int(y) >= config.DIAG_CONTACT_COUNTS for y in ys)         # real plume contact (false-alarm probability about 1e-8)
+            contact_steps, self.ep_contact = contact_steps + int(hit), self.ep_contact + int(hit)
+            self.ep_closest = min(self.ep_closest, float(np.hypot(*(np.asarray(info["drone_xy"]).reshape(-1, 2) - info["truth_xy"]).T).min()))
             applied = info["applied"] if self.n > 1 else [info["applied"]]
             n_applied_masked += sum(1 for x in applied if not x)          # must stay 0: the policy never samples a masked action
             self.ep_return += float(r)
@@ -99,7 +131,8 @@ class RolloutCollector:
                                  "success": bool(info["success"]), "success_strict": bool(info.get("success_strict", False)),
                                  "source": int(info["source"]), "reflected": bool(info["reflected"]), "start_type": info.get("start_type", ""),
                                  "final_error_m": float(info["map_error_m"]), "top_sigma_m": float(info["top_sigma_m"]),
-                                 "entropy_drop": float(1.0 - info["entropy"] / max(self.env.h0, 1e-9)), "truncated": bool(trunc)})
+                                 "entropy_drop": float(1.0 - info["entropy"] / max(self.env.h0, 1e-9)), "truncated": bool(trunc),
+                                 "closest_m": self.ep_closest, "contact_steps": self.ep_contact})
                 self._reset()
             else:
                 self.obs = np.asarray(obs, dtype=np.float32).reshape(self.n, -1)
@@ -108,6 +141,7 @@ class RolloutCollector:
         buf["val"] = buf["val"].astype(np.float64)
         buf["masked_share"] = masked_share / n_steps
         buf["applied_masked"] = n_applied_masked
+        buf["belief_cos_sum"], buf["belief_cos_n"], buf["contact_steps"], buf["n_team_steps"] = cos_sum, cos_n, contact_steps, n_steps
         buf["wall_s"] = time.perf_counter() - t0
         buf["episodes"] = episodes
         buf["episode_idx"] = self.episode_idx

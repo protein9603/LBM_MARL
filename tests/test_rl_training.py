@@ -188,3 +188,37 @@ def test_run_eval_refuses_an_episode_list_of_another_mode(tmp_path):
     save_episode_list(make_episode_list([101], 2, 123, "T2"), tmp_path / "ep.csv")
     with pytest.raises(SystemExit, match="--mode"):
         eval_main(["--episodes", str(tmp_path / "ep.csv"), "--mode", "F", "--methods", "random", "--n-drones", "1", "--out-dir", str(tmp_path / "o"), "--processes", "1"])
+
+
+def test_belief_alignment_is_the_cosine_between_the_heading_and_the_direction_to_the_belief_mean():
+    from srcloc_env.rl.rollout import belief_alignment
+    pos = np.array([[0.0, 0.0], [0.0, 0.0], [50.0, 50.0]])
+    # drone 0 flies east towards a mean at (100, 0): +1; drone 1 flies west: -1; drone 2 stays: skipped
+    total, n = belief_alignment(pos, np.array([100.0, 0.0]), np.array([0, 4, config.DRONE_N_ACTIONS - 1]))
+    assert n == 2 and total == pytest.approx(0.0)
+    total, n = belief_alignment(pos[:1], np.array([100.0, 0.0]), np.array([0]))
+    assert (total, n) == (pytest.approx(1.0), 1)
+    total, n = belief_alignment(pos[:1], np.array([100.0, 100.0]), np.array([1]))              # north-east heading, mean to the north-east
+    assert total / n == pytest.approx(1.0)
+    assert belief_alignment(pos[:1], np.array([0.4, 0.0]), np.array([0])) == (0.0, 0)          # already within 1 m of the mean
+
+
+def test_collector_reports_belief_alignment_contacts_and_the_closest_approach(scene):
+    col = _collector(scene, 2)
+    ro = col.collect(ActorCritic(config.ENV_OBS_DIM + config.ENV_TEAMMATE_DIM), 40, 1)
+    assert ro["n_team_steps"] == 40 and 0 <= ro["contact_steps"] <= 40 and ro["belief_cos_n"] > 0
+    assert -1.0 <= ro["belief_cos_sum"] / ro["belief_cos_n"] <= 1.0
+    assert all(e["closest_m"] >= 0.0 and 0 <= e["contact_steps"] <= e["length"] for e in ro["episodes"])
+
+
+def test_train_passes_the_source_start_and_ppo_options_and_logs_the_diagnostics(scene, tmp_path, monkeypatch):
+    out = _run(["--run-name", "opt", "--procs", "0", "--n-steps", "32", "--out-root", str(tmp_path), "--no-ckpt-eval", "--n-drones", "1",
+                "--total-steps", "64", "--sources", "1", "2", "--start-plume-frac", "1.0", "--start-min-dist", "60", "--start-max-dist", "120", "--scale-range", "1", "2",
+                "--minibatch", "16", "--epochs", "2", "--gamma", "1.0", "--gae-lambda", "0.97", "--target-kl", "0.02", "--log-every", "1"], scene, monkeypatch)
+    assert _FakePool.last_env_kw == {"truth_mode": "F", "max_steps": config.MAX_EPISODE_STEPS, "sources": (1, 2), "start_plume_frac": 1.0,
+                                     "start_min_dist": 60.0, "start_max_dist": 120.0, "scale_range": (1.0, 2.0)}
+    cfgj = (tmp_path / "opt" / "config.json").read_text(encoding="utf-8")
+    assert "\"gamma\": 1.0" in cfgj and "\"target_kl\": 0.02" in cfgj and "\"minibatch\": 16" in cfgj
+    rows = _rows(tmp_path / "opt" / "train_log.csv")
+    assert out["iterations"] == 2 and all(k in rows[0] for k in ("belief_cos", "contact_frac", "closest_m_ma", "n_success", "adv_std", "kl_stopped"))
+    assert float(rows[0]["adv_std"]) > 0.0

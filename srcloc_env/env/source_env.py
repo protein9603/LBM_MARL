@@ -155,7 +155,7 @@ class SourceLocEnv(gym.Env):
                  t2_start_range: tuple[int, int] = config.FRAME_START_MODE_T2,
                  t2_files_per_step: float = config.T1_4_MODE_T2_FILES_PER_STEP,
                  scale_range: tuple[float, float] = config.SENSOR_SCALE_RANGE,
-                 start_min_dist: float = config.ENV_START_MIN_DIST_M,
+                 start_min_dist: float = config.ENV_START_MIN_DIST_M, start_max_dist: float = float("inf"),
                  start_plume_frac: float = config.ENV_START_PLUME_FRAC,
                  prior_x: tuple[float, float] = config.PF_PRIOR_X, prior_y: tuple[float, float] = config.PF_PRIOR_Y,
                  likelihood: str | None = None, nb_r: float = config.PF_NB_DISPERSION_R,
@@ -192,6 +192,7 @@ class SourceLocEnv(gym.Env):
         self.t2_files_per_step = float(t2_files_per_step)
         self.scale_range = (float(scale_range[0]), float(scale_range[1]))
         self.start_min_dist = float(start_min_dist)
+        self.start_max_dist = float(start_max_dist)          # curriculum stage A of the recovery plan: starts within [min, max] of the source; inf = no limit
         self.start_plume_frac = float(start_plume_frac)
         self.start_type = "random"
         self.prior_x, self.prior_y = (float(prior_x[0]), float(prior_x[1])), (float(prior_y[0]), float(prior_y[1]))
@@ -260,7 +261,7 @@ class SourceLocEnv(gym.Env):
             xx, yy = np.meshgrid(g.x_centres, g.y_centres)
             if self.scene.reflected:
                 yy = -yy
-            okc = ((self.det.expected_counts(dens, self.scale) >= thr) & (np.hypot(xx - sx, yy - sy) >= self.start_min_dist)
+            okc = ((self.det.expected_counts(dens, self.scale) >= thr) & (np.hypot(xx - sx, yy - sy) >= self.start_min_dist) & (np.hypot(xx - sx, yy - sy) <= self.start_max_dist)
                    & (xx >= self.prior_x[0]) & (xx <= self.prior_x[1]) & (yy >= self.prior_y[0]) & (yy <= self.prior_y[1]))
             cells = np.flatnonzero(okc.ravel())
             for _ in range(config.ENV_START_MAX_BATCHES):
@@ -277,7 +278,8 @@ class SourceLocEnv(gym.Env):
                 cand = np.column_stack([rng.uniform(self.prior_x[0], self.prior_x[1], config.ENV_START_BATCH),
                                         rng.uniform(self.prior_y[0], self.prior_y[1], config.ENV_START_BATCH)])
                 d = cand - np.array([sx, sy])
-                ok = (np.hypot(d[:, 0], d[:, 1]) >= self.start_min_dist) & om.is_free(cand, self.z)
+                dist = np.hypot(d[:, 0], d[:, 1])
+                ok = (dist >= self.start_min_dist) & (dist <= self.start_max_dist) & om.is_free(cand, self.z)
                 if plume and ok.any():
                     sel = np.flatnonzero(ok)
                     dens = self.scene.backend.density([self.source], cand[sel], self.frame_at(0), self.z, 1.0, flip_y=self.scene.reflected)
@@ -286,7 +288,7 @@ class SourceLocEnv(gym.Env):
                 if idx.size:
                     self.start_type = "plume" if plume else "random"
                     return cand[idx[0]].copy()
-        raise RuntimeError(f"no free start >= {self.start_min_dist} m from source {self.source} found")
+        raise RuntimeError(f"no free start {self.start_min_dist}..{self.start_max_dist} m from source {self.source} found")
 
     def _measure(self) -> tuple[int, float]:
         """One count at the current position / frame: (y, truth density); records the frame in self.frame_meas."""

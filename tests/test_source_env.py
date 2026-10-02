@@ -325,3 +325,13 @@ def test_reflected_scene_draws_plume_starts_like_the_original(scene):
                 dens = sc.backend.density([1], info["drone_xy"], env.frame_at(0), config.DRONE_Z, 1.0, flip_y=refl)
                 assert float(env.det.expected_counts(dens, env.scale)[0]) >= thr * 0.999        # detectable at the START (mirrored density for reflected)
     assert n_plume[True] >= 20 and n_plume[False] >= 20
+
+
+def test_start_max_dist_keeps_every_start_inside_the_distance_ring(scene):
+    """Curriculum stage A: starts (plume and random) lie within [start_min_dist, start_max_dist] of the source."""
+    for frac in (0.0, 1.0):
+        env = _env(scene, start_min_dist=20.0, start_max_dist=60.0, start_plume_frac=frac)
+        for seed in range(15):
+            _, info = env.reset(seed=seed, options={"source": 1})
+            d = float(np.hypot(*(info["drone_xy"] - info["truth_xy"])))
+            assert 20.0 - 1e-6 <= d <= 60.0 + 1e-6, (frac, seed, d)

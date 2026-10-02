@@ -643,3 +643,7 @@ R3D_ILLUSTRATIVE_FRAMES = (400, 599)   # --illustrative: the field cycles over t
 R3D_ILLUSTRATIVE_SECONDS = 10.0   # --illustrative: clip length incl. the hold [s] (spec 11.3: <= 10 s)
 R3D_ILLUSTRATIVE_WATERMARK = "illustrative - not the truth seen by the policy"
 R3D_PRESETS = {"final": {"width": 1920, "height": 1080, "stride": 1, "fps": 30, "steps_per_second": 5.0}}   # spec 11.5: 1920 x 1080, 5 steps/s, 30 fps encoding
+
+
+# D12 - diagnostics and training options of the recovery plan (docs/training_failure_analysis_and_plan.md)
+DIAG_CONTACT_COUNTS = 50              # a measurement of at least this many counts is a real plume contact (background 20 cps: false-alarm probability about 1e-8) [D12 diagnostic]

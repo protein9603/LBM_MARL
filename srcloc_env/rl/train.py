@@ -31,9 +31,9 @@ from srcloc_env.rl.rollout import RolloutPool
 
 LOG_FIELDS = ["iteration", "env_steps", "wall_s", "rollout_s", "update_s", "steps_per_s", "episodes_total", "success_ma", "strict_ma",
               "return_ma", "length_ma", "entropy_drop_ma", "final_error_ma", "policy_loss", "value_loss", "entropy", "approx_kl",
-              "clip_frac", "explained_var", "masked_share", "applied_masked"]
+              "clip_frac", "explained_var", "masked_share", "applied_masked", "kl_stopped", "belief_cos", "contact_frac", "closest_m_ma", "n_success", "adv_std"]
 EP_FIELDS = ["env_steps", "proc", "episode_idx", "source", "reflected", "start_type", "success", "success_strict", "truncated", "length",
-             "ret", "ret_info", "ret_time", "ret_terminal", "final_error_m", "top_sigma_m", "entropy_drop"]
+             "ret", "ret_info", "ret_time", "ret_terminal", "final_error_m", "top_sigma_m", "entropy_drop", "closest_m", "contact_steps"]
 
 
 def _git_commit() -> str:
@@ -81,7 +81,20 @@ def train(a: argparse.Namespace) -> dict[str, Any]:
     mode = str(a.truth_mode)
     max_steps = int(a.max_steps) if a.max_steps else default_max_steps(mode)
     obs_dim = int(config.ENV_OBS_DIM + config.ENV_TEAMMATE_DIM * (n - 1))
-    cfg = PPOConfig(n_steps=int(a.n_steps))
+    over = {k: v for k, v in {"minibatch": a.minibatch, "epochs": a.epochs, "lr": a.lr, "gamma": a.gamma, "gae_lambda": a.gae_lambda,
+                              "ent_coef": a.ent_coef, "clip": a.clip, "target_kl": a.target_kl}.items() if v is not None}
+    cfg = PPOConfig(n_steps=int(a.n_steps), **over)
+    env_kw: dict[str, Any] = {"truth_mode": mode, "max_steps": max_steps}
+    if a.sources:
+        env_kw["sources"] = tuple(int(x) for x in a.sources)
+    if a.start_plume_frac is not None:
+        env_kw["start_plume_frac"] = float(a.start_plume_frac)
+    if a.start_min_dist is not None:
+        env_kw["start_min_dist"] = float(a.start_min_dist)
+    if a.start_max_dist is not None:
+        env_kw["start_max_dist"] = float(a.start_max_dist)
+    if a.scale_range:
+        env_kw["scale_range"] = (float(a.scale_range[0]), float(a.scale_range[1]))
     torch.set_num_threads(1)
     torch.manual_seed(int(a.run_seed))
     latest = run_dir / "latest.pt"
@@ -115,12 +128,13 @@ def train(a: argparse.Namespace) -> dict[str, Any]:
     info = {"args": {k: (str(v) if isinstance(v, Path) else v) for k, v in vars(a).items()}, "ppo": cfg.to_dict(), "obs_dim": obs_dim,
             "n_drones": n, "init": init_note, "git_commit": _git_commit(), "torch": torch.__version__,
             "train_sources": list(config.TRAIN_SOURCES), "reflect_prob": config.ENV_REFLECT_PROB_TRAIN,
-            "success_sigma_m": config.ENV_SUCCESS_SIGMA_M, "success_error_m": config.ENV_SUCCESS_ERROR_M, "truth_mode": mode, "max_steps": max_steps}
+            "success_sigma_m": config.ENV_SUCCESS_SIGMA_M, "success_error_m": config.ENV_SUCCESS_ERROR_M, "truth_mode": mode, "max_steps": max_steps,
+            "env_kw": env_kw}
     cfg_name = "config.json" if not resume else f"config_resume_{it}.json"
     (run_dir / cfg_name).write_text(json.dumps(info, indent=2, ensure_ascii=False), encoding="utf-8")
     print(f"[train] {a.run_name}: {n} drone(s), truth {mode}, {max_steps}-step episodes, obs {obs_dim}, {a.procs} worker(s), {cfg.n_steps} steps each, total {a.total_steps} team steps; {init_note}", flush=True)
 
-    pool = RolloutPool(n, int(a.run_seed), int(a.procs), episode_idx=ep_idx, env_kw={"truth_mode": mode, "max_steps": max_steps})
+    pool = RolloutPool(n, int(a.run_seed), int(a.procs), episode_idx=ep_idx, env_kw=env_kw)
     ma: collections.deque = collections.deque(maxlen=int(a.ma_window))
     every = int(a.ckpt_every_steps) if a.ckpt_every_steps else max(int(a.total_steps) // 10, 1)
     next_step_ckpt = (steps // every + 1) * every
@@ -131,7 +145,7 @@ def train(a: argparse.Namespace) -> dict[str, Any]:
 
     def checkpoint(final: bool = False) -> None:
         extra = {"iteration": it, "env_steps": steps, "episode_idx": list(ep_idx), "n_drones": n, "run_name": a.run_name, "ppo": cfg.to_dict(),
-                 "truth_mode": mode, "max_steps": max_steps}
+                 "truth_mode": mode, "max_steps": max_steps, "env_kw": env_kw}
         path = run_dir / ("final.pt" if final else f"ckpt_{steps:08d}.pt")
         save_checkpoint(path, learner, extra)
         save_checkpoint(latest, learner, extra)
@@ -150,7 +164,9 @@ def train(a: argparse.Namespace) -> dict[str, Any]:
             t0 = time.perf_counter()
             ro = pool.collect(net, cfg.n_steps, it)
             t1 = time.perf_counter()
-            stats = learner.update(make_batch(ro, cfg.gamma, cfg.gae_lambda))
+            batch = make_batch(ro, cfg.gamma, cfg.gae_lambda)
+            adv_std = float(batch.adv.std())
+            stats = learner.update(batch)
             t2 = time.perf_counter()
             steps += cfg.n_steps * len(ro)
             ep_idx = [r["episode_idx"] for r in ro]
@@ -163,6 +179,12 @@ def train(a: argparse.Namespace) -> dict[str, Any]:
                    "steps_per_s": sps, "episodes_total": len(eps), "success_ma": s_ma, "strict_ma": st_ma, "return_ma": r_ma,
                    "length_ma": l_ma, "entropy_drop_ma": d_ma, "final_error_ma": _ma(ma, "final_error_m"),
                    "masked_share": float(np.mean([r["masked_share"] for r in ro])), "applied_masked": int(sum(r["applied_masked"] for r in ro)), **stats}
+            n_cos = sum(r["belief_cos_n"] for r in ro)
+            row["belief_cos"] = sum(r["belief_cos_sum"] for r in ro) / n_cos if n_cos else float("nan")
+            row["contact_frac"] = sum(r["contact_steps"] for r in ro) / max(sum(r["n_team_steps"] for r in ro), 1)
+            row["closest_m_ma"] = _ma(ma, "closest_m") if len(ma) else float("nan")
+            row["n_success"] = sum(1 for e in eps if e["success"])
+            row["adv_std"] = adv_std
             _append_rows(run_dir / "train_log.csv", LOG_FIELDS, [row])
             if it % int(a.log_every) == 0:
                 ent, kl, clip, ev = stats["entropy"], stats["approx_kl"], stats["clip_frac"], stats["explained_var"]
@@ -199,6 +221,13 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--truth-mode", choices=list(config.ENV_MODES), default=config.ENV_TRUTH_MODE_DEFAULT,
                     help="F = one frozen frame per episode, T2 = time-varying truth (frame 400 + t, D11)")
     ap.add_argument("--max-steps", type=int, default=0, help="episode horizon (0 = 300 in Mode F, config.T2_MAX_STEPS in Mode T2)")
+    ap.add_argument("--sources", type=int, nargs="*", default=None, help="training sources (default config.TRAIN_SOURCES); the evaluation lists are unchanged")
+    ap.add_argument("--start-plume-frac", type=float, default=None, help="probability that a drone starts inside the detectable plume region (default config.ENV_START_PLUME_FRAC)")
+    ap.add_argument("--start-min-dist", type=float, default=None, help="minimum start distance from the source [m] (default 200)")
+    ap.add_argument("--start-max-dist", type=float, default=None, help="maximum start distance from the source [m] (default: no limit)")
+    ap.add_argument("--scale-range", type=float, nargs=2, default=None, help="sensor scale range of the training episodes (default log-uniform 0.3 .. 3)")
+    for k, d in (("minibatch", int), ("epochs", int), ("lr", float), ("gamma", float), ("gae-lambda", float), ("ent-coef", float), ("clip", float), ("target-kl", float)):
+        ap.add_argument(f"--{k}", type=d, default=None, help=f"PPO {k} (default: config.PPO_*)")
     ap.add_argument("--init-from", type=Path, default=None, help="checkpoint whose weights initialise the network (M1 to M2)")
     ap.add_argument("--resume", action="store_true")
     ap.add_argument("--out-root", type=Path, default=config.TRAIN_ROOT)

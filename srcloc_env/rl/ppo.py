@@ -111,6 +111,7 @@ class PPOConfig:
     ent_coef: float = config.PPO_ENT_COEF
     max_grad_norm: float = config.PPO_MAX_GRAD_NORM
     adv_normalise: bool = config.PPO_ADV_NORMALISE
+    target_kl: float | None = None              # stop the remaining epochs when the minibatch approx KL exceeds 1.5 x this value (None = never)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -189,7 +190,10 @@ class PPOLearner:
             adv = (adv - adv.mean()) / (adv.std() + 1e-8)
         stats: dict[str, list[float]] = {k: [] for k in ("policy_loss", "value_loss", "entropy", "approx_kl", "clip_frac")}
         self.net.train()
+        stopped = False
         for _ in range(c.epochs):
+            if stopped:
+                break
             perm = torch.randperm(n, generator=self.gen)
             for s in range(0, n, c.minibatch):
                 idx = perm[s:s + c.minibatch]
@@ -215,8 +219,12 @@ class PPOLearner:
                     stats["entropy"].append(float(ent.mean()))
                     stats["approx_kl"].append(float(((ratio - 1.0) - log_ratio).mean()))
                     stats["clip_frac"].append(float(((ratio - 1.0).abs() > c.clip).float().mean()))
+                    if c.target_kl is not None and stats["approx_kl"][-1] > 1.5 * c.target_kl:
+                        stopped = True
+                        break
         out = {k: float(np.mean(v)) for k, v in stats.items()}
         var = float(b.ret.var())
+        out["kl_stopped"] = float(stopped)
         out["explained_var"] = float(1.0 - (b.ret - b.val).var() / var) if var > 1e-12 else float("nan")
         return out
 
