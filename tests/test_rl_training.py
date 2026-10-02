@@ -290,3 +290,30 @@ def test_init_from_checks_the_obs_version_and_resume_checks_the_environment_opti
     ck = torch.load(tmp_path / "c" / "latest.pt", map_location="cpu", weights_only=False)
     assert ck["learner"]["opt_actor"]["param_groups"][0]["lr"] == pytest.approx(1e-3)
     assert '"train_sources": [\n    1\n  ]' in (tmp_path / "c" / "config.json").read_text(encoding="utf-8") or "\"train_sources\": [1]" in (tmp_path / "c" / "config.json").read_text(encoding="utf-8").replace("\n", "").replace(" ", "").replace("\"train_sources\":[1]", "\"train_sources\": [1]")
+
+
+def test_start_ring_is_validated_and_resumed_csv_logs_keep_their_old_header(scene, tmp_path, monkeypatch):
+    with pytest.raises(ValueError, match="empty start ring"):
+        _run(["--run-name", "ring", "--procs", "0", "--n-steps", "32", "--out-root", str(tmp_path), "--no-ckpt-eval", "--n-drones", "1", "--total-steps", "32",
+              "--start-max-dist", "100"], scene, monkeypatch)                                           # the default minimum start distance is 200 m
+    old = tmp_path / "old.csv"
+    old.write_text("a,b\n1,2\n", encoding="utf-8")
+    tr._append_rows(old, ["a", "b", "c"], [{"a": 3, "b": 4, "c": 5}])                                 # a newer schema with an extra column
+    assert old.read_text(encoding="utf-8").splitlines() == ["a,b", "1,2", "3,4"]
+
+
+def test_detection_flag_drives_the_v2_recency_feature_per_drone(scene, monkeypatch):
+    env = make_train_env(scene, scene.reflected_scene(), 2, obs_version="v2", **KW)
+    obs, _ = env.reset(seed=2)
+    assert obs[0, 45] == obs[1, 45] == 1.0                                           # nothing detected yet
+    calls = {"n": 0}
+
+    def fake(y):                                                                      # drone 0 detects in step 1 only
+        calls["n"] += 1
+        return calls["n"] == 1
+    monkeypatch.setattr(env.det, "is_detection", fake)
+    obs, *_ = env.step(np.array([8, 8]))
+    assert obs[0, 45] == 0.0 and obs[1, 45] == 1.0                                   # drone 0: just detected, drone 1: still never detected
+    for k in range(1, 4):
+        obs, *_ = env.step(np.array([8, 8]))
+        assert obs[0, 45] == pytest.approx(k / config.ENV_V2_DET_NORM_STEPS) and obs[1, 45] == 1.0

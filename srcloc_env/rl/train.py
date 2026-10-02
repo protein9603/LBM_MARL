@@ -50,7 +50,10 @@ def save_checkpoint(path: Path, learner: PPOLearner, extra: dict[str, Any]) -> N
 
 
 def _append_rows(path: Path, fields: list[str], rows: list[dict[str, Any]]) -> None:
-    new = not path.exists()
+    new = not path.exists() or path.stat().st_size == 0
+    if not new:                                           # resuming a run written with an older schema: keep ITS header so the columns stay aligned
+        with path.open(encoding="utf-8", newline="") as fh:
+            fields = next(csv.reader(fh))
     with path.open("a", newline="", encoding="utf-8") as fh:
         w = csv.DictWriter(fh, fieldnames=fields, extrasaction="ignore")
         if new:
@@ -100,6 +103,9 @@ def train(a: argparse.Namespace) -> dict[str, Any]:
         env_kw["start_min_dist"] = float(a.start_min_dist)
     if a.start_max_dist is not None:
         env_kw["start_max_dist"] = float(a.start_max_dist)
+    lo, hi = float(env_kw.get("start_min_dist", config.ENV_START_MIN_DIST_M)), float(env_kw.get("start_max_dist", float("inf")))
+    if lo > hi:
+        raise ValueError(f"empty start ring: --start-min-dist {lo} > --start-max-dist {hi} (the default minimum is {config.ENV_START_MIN_DIST_M} m)")
     if a.scale_range:
         env_kw["scale_range"] = (float(a.scale_range[0]), float(a.scale_range[1]))
     torch.set_num_threads(1)

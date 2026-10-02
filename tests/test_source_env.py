@@ -367,3 +367,16 @@ def test_potential_shaping_telescopes_and_the_default_reward_is_unchanged(scene)
         if tc or uc:
             break
     assert rc == pytest.approx(ru) or ru < rc                                   # the uncapped terminal term is never smaller in magnitude than the capped one
+
+
+def test_plume_start_jitter_never_leaves_the_distance_ring(scene):
+    """The direct plume-start draw jitters a cell centre by +-res/2: the ring and the prior box must still hold (review D12)."""
+    sc = Scene.build(_wind(), _obstacles(), SlabSyntheticBackend(), SOURCES, AdjointParams(K=16.0, lam=0.005), SlabGrid(0.0, -75.0, 40, 28, 5.0))
+    env = _env(sc, start_min_dist=30.0, start_max_dist=40.0, start_plume_frac=1.0)
+    n_plume = 0
+    for seed in range(40):
+        _, info = env.reset(seed=seed, options={"source": 1, "reflect": False})
+        d = float(np.hypot(*(info["drone_xy"] - info["truth_xy"])))
+        assert 30.0 <= d <= 40.0 and DOMAIN_X[0] <= info["drone_xy"][0] <= DOMAIN_X[1], (seed, d)
+        n_plume += info["start_type"] == "plume"
+    assert n_plume > 0

@@ -284,7 +284,9 @@ class SourceLocEnv(gym.Env):
                     break
                 j = int(cells[int(rng.integers(cells.size))])
                 cand = np.array([xx.flat[j] + rng.uniform(-0.5, 0.5) * g.res, yy.flat[j] + rng.uniform(-0.5, 0.5) * g.res])
-                if om.is_free(cand, self.z):
+                dc = float(np.hypot(cand[0] - sx, cand[1] - sy))        # the +-res/2 jitter must not leave the distance ring or the prior box
+                if (self.start_min_dist <= dc <= self.start_max_dist and self.prior_x[0] <= cand[0] <= self.prior_x[1]
+                        and self.prior_y[0] <= cand[1] <= self.prior_y[1] and om.is_free(cand, self.z)):
                     self.start_type = "plume"
                     return cand
         for attempt in range(2 if want_plume else 1):
