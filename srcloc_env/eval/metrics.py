@@ -7,7 +7,8 @@ declared-success step (first step with top sigma < ENV_SUCCESS_SIGMA_M) and the 
 a stopping rule that only uses the belief), wall time.
 Aggregates per (method, n_drones, group; groups = GROUPS: mutually exclusive train_open / train_other / holdout, summaries train / all_observable, and the unobservable source 110 apart): success rate with Wilson 95 % CI, success-step median (successes only) with
 bootstrap CI, censored median (failures counted as max_steps), final error median / p90, first-detection median,
-declared-success rate = fraction of episodes whose declared stop is within ENV_SUCCESS_ERROR_M.
+declared-success rate = fraction of ALL episodes whose declared stop (first step with top sigma < ENV_SUCCESS_SIGMA_M) is within ENV_SUCCESS_ERROR_M
+(an episode that never declares counts as a failure, spec 9.7); declared_conditional_rate = the same among the declaring episodes only; overconfident rate = declared but error >= SUCCESS_ERROR_M; declaration delay = declared step minus first success step.
 Paired differences on the common episode list: per episode success difference and success-step difference.
 """
 from __future__ import annotations
@@ -72,6 +73,8 @@ def aggregate(records: Iterable[dict], max_steps: int = config.MAX_EPISODE_STEPS
         first = [r["first_detection_step"] for r in rs if r.get("first_detection_step") is not None]
         declared = [r for r in rs if r.get("declared_step") is not None]
         decl_ok = sum(1 for r in declared if r["declared_error_m"] < config.ENV_SUCCESS_ERROR_M)
+        decl_over = sum(1 for r in declared if r["declared_error_m"] >= config.SUCCESS_ERROR_M)       # declared (sigma < 30 m) but still >= 20 m off
+        delays = [r["declared_step"] - r["steps"] for r in declared if r["success"]]                  # declaration step minus the actual first success step
         ks = sum(int(bool(r.get("success_strict", False))) for r in rs)
         srate, slo, shi = wilson_ci(ks, n)
         out[gname] = {"n": n, "n_success": k, "success_rate": rate, "success_ci": [lo, hi],
@@ -80,7 +83,11 @@ def aggregate(records: Iterable[dict], max_steps: int = config.MAX_EPISODE_STEPS
                       "censored_step_median": float(np.median(censored)),
                       "final_error_median_m": float(np.median(errs)), "final_error_p90_m": float(np.percentile(errs, 90)),
                       "first_detection_median": (float(np.median(first)) if first else None),
-                      "declared_n": len(declared), "declared_success_rate": (decl_ok / len(declared) if declared else None),
+                      "declared_n": len(declared),
+                      "declared_success_rate": decl_ok / n,                                               # spec 9.7: no declaration within the horizon counts as a failure
+                      "declared_conditional_rate": (decl_ok / len(declared) if declared else None),         # correct among the episodes that declared
+                      "declared_overconfident_rate": (decl_over / len(declared) if declared else None),     # declared but error >= SUCCESS_ERROR_M
+                      "declaration_delay_median": (float(np.median(delays)) if delays else None),
                       "path_length_median_m": float(np.median([r["path_length_m"] for r in rs])),
                       "masked_actions_median": float(np.median([r["n_masked"] for r in rs]))}
     return out

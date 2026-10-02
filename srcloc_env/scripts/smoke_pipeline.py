@@ -272,8 +272,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--eval-per-source", type=int, default=1)
     ap.add_argument("--with-infotaxis", action="store_true", help="also evaluate GMM-Infotaxis (slow)")
     ap.add_argument("--no-compare-run", action="store_true", help="skip the tiny 1-drone run used for the 1-versus-n-drone comparison figure")
-    ap.add_argument("--video-width", type=int, default=640)
-    ap.add_argument("--video-height", type=int, default=360)
+    ap.add_argument("--video-width", type=int, default=960)
+    ap.add_argument("--video-height", type=int, default=540)
     ap.add_argument("--video-stride", type=int, default=3)
     ap.add_argument("--video-frames", type=int, default=40)
     for s in ("train", "eval", "figs", "video"):
