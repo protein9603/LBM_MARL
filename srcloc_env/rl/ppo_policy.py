@@ -7,6 +7,7 @@ sampling generator is seeded from (source, frame, scale) of the episode, so repe
 """
 from __future__ import annotations
 
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -31,7 +32,7 @@ class PPOPolicy(Policy):
         ck = load_checkpoint(checkpoint)
         self.net: ActorCritic = net_from_state(ck["learner"])
         self.net.eval()
-        self.meta = {k: ck.get(k) for k in ("iteration", "env_steps", "n_drones", "run_name")}
+        self.meta = {k: ck.get(k) for k in ("iteration", "env_steps", "n_drones", "run_name", "truth_mode", "max_steps")}
         self.gen = torch.Generator().manual_seed(0)
 
     def reset(self, env, info: dict) -> None:   # noqa: ANN001
@@ -39,6 +40,9 @@ class PPOPolicy(Policy):
         d = int(config.ENV_OBS_DIM + config.ENV_TEAMMATE_DIM * (n - 1))
         if d != self.net.obs_dim:
             raise ValueError(f"checkpoint {self.checkpoint} expects {self.net.obs_dim} observation inputs, the {n}-drone environment gives {d}")
+        for key, val in ("truth_mode", getattr(env, "truth_mode", None)), ("max_steps", getattr(env, "max_steps", None)):
+            if self.meta.get(key) is not None and val is not None and self.meta[key] != val:
+                warnings.warn(f"checkpoint {self.checkpoint} was trained with {key} = {self.meta[key]} but is evaluated with {key} = {val}", stacklevel=2)
         seed = np.random.SeedSequence([int(info["source"]), int(info["frame"]), int(round(float(info["scale"]) * 1e6)), 13])
         self.gen = torch.Generator().manual_seed(int(seed.generate_state(1)[0]))
 

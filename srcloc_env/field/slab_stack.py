@@ -48,7 +48,11 @@ def build_slab_stack(cache_dir: Path = config.CACHE_DIR, out_path: Path = config
             print(f"[slab_stack] frame {f}", flush=True)
     stack.flush()
     del stack
-    tmp.replace(out_path)
+    try:
+        tmp.replace(out_path)
+    except PermissionError as exc:                           # Windows: another process (training / evaluation worker) has the old stack mapped
+        tmp.unlink(missing_ok=True)
+        raise RuntimeError(f"{out_path} is memory-mapped by another process; stop the running training / evaluation and rebuild, or verify only (--no-build)") from exc
     meta = {"n_files": int(n_files), "z": float(z), "sources": list(sources), "grid": list(grid), "shape": [int(n_files), *dens.shape], "dtype": "float16"}
     meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
     return meta

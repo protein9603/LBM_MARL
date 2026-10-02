@@ -1,6 +1,8 @@
 """Build (and verify) the memory-mapped 15 m slab stack used by the time-varying truth mode T2 (D11).
 
-Usage: python -m srcloc_env.scripts.build_slab_stack [--verify N] [--no-build]
+Usage: python -m srcloc_env.scripts.build_slab_stack [--verify N] [--rebuild | --no-build]
+The stack is built only when it does not exist (or with --rebuild; this fails on Windows while a training / evaluation process has it mapped);
+--no-build never builds.
 Reads cache/slabs/slab_000..599.npz (about 35 ms each), writes cache/slab_stack_z15.npy (float16, about 0.65 GB) and its JSON meta file; --verify
 compares StackedSlabBackend with LdmSlabBackend on N random frames (bit-identical density queries at random points, all 13 sources).
 """
@@ -34,9 +36,11 @@ def main(argv: list[str] | None = None) -> dict:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--verify", type=int, default=25, help="random frames to compare against LdmSlabBackend (0 = skip)")
     ap.add_argument("--no-build", action="store_true", help="only verify an existing stack")
+    ap.add_argument("--rebuild", action="store_true", help="rebuild even if the stack exists")
     args = ap.parse_args(argv)
     t0 = time.perf_counter()
-    meta = None if args.no_build else build_slab_stack(verbose=True)
+    exists = config.SLAB_STACK_PATH.exists() and config.SLAB_STACK_META_PATH.exists()
+    meta = None if (args.no_build or (exists and not args.rebuild)) else build_slab_stack(verbose=True)
     if meta is not None:
         print(f"[slab_stack] built {meta['shape']} {meta['dtype']} in {time.perf_counter() - t0:.0f} s -> {config.SLAB_STACK_PATH}")
     bad = verify(args.verify) if args.verify > 0 else 0

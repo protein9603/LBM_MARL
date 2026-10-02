@@ -166,3 +166,25 @@ def test_train_passes_the_truth_mode_and_horizon_to_the_workers_and_the_checkpoi
     _run(["--run-name", "f", "--procs", "0", "--n-steps", "32", "--out-root", str(tmp_path), "--no-ckpt-eval", "--n-drones", "1",
           "--total-steps", "32"], scene, monkeypatch)
     assert _FakePool.last_env_kw == {"truth_mode": "F", "max_steps": config.MAX_EPISODE_STEPS}
+
+
+def test_resume_refuses_a_different_truth_mode_and_ppo_policy_warns_on_a_mode_mismatch(scene, tmp_path, monkeypatch):
+    base = ["--run-name", "g", "--procs", "0", "--n-steps", "32", "--out-root", str(tmp_path), "--no-ckpt-eval", "--n-drones", "1", "--truth-mode", "T2"]
+    _run(base + ["--total-steps", "32"], scene, monkeypatch)
+    with pytest.raises(ValueError, match="--resume"):
+        _run(["--run-name", "g", "--procs", "0", "--n-steps", "32", "--out-root", str(tmp_path), "--no-ckpt-eval", "--n-drones", "1",
+              "--total-steps", "64", "--resume"], scene, monkeypatch)                      # Mode F by default: must not silently continue a T2 run
+    _run(base + ["--total-steps", "64", "--resume"], scene, monkeypatch)                    # same mode: fine
+    ck = tmp_path / "g" / "final.pt"
+    env_f = make_train_env(scene, scene.reflected_scene(), 1, **{**KW, "terminate_on_success": False})              # Mode F environment
+    spec = EpisodeSpec(episode_id=0, seed=7, source=1, frame=450, scale=1.0)
+    with pytest.warns(UserWarning, match="truth_mode"):
+        run_episode(env_f, PPOPolicy(ck), spec)
+
+
+def test_run_eval_refuses_an_episode_list_of_another_mode(tmp_path):
+    from srcloc_env.eval.episodes import make_episode_list, save_episode_list
+    from srcloc_env.eval.run_eval import main as eval_main
+    save_episode_list(make_episode_list([101], 2, 123, "T2"), tmp_path / "ep.csv")
+    with pytest.raises(SystemExit, match="--mode"):
+        eval_main(["--episodes", str(tmp_path / "ep.csv"), "--mode", "F", "--methods", "random", "--n-drones", "1", "--out-dir", str(tmp_path / "o"), "--processes", "1"])

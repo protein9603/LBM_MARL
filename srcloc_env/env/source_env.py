@@ -251,12 +251,15 @@ class SourceLocEnv(gym.Env):
         want_plume = bool(rng.random() < self.start_plume_frac)
         om = self.scene.obstacles
         thr = config.ENV_START_PLUME_MIN_COUNTS_FACTOR * self.det.detection_threshold_cps() * self.det.T
-        if want_plume and hasattr(self.scene.backend, "slab") and not self.scene.reflected:
-            # direct draw from the detectable cells of the episode's slab (rejection from a uniform box rarely hits a thin plume)
+        if want_plume and hasattr(self.scene.backend, "slab"):
+            # direct draw from the detectable cells of the episode's slab (rejection from a uniform box rarely hits a thin plume);
+            # a reflected scene uses the same slab with the cell centres mirrored (x, y) -> (x, -y), like the density queries (flip_y)
             sf = self.scene.backend.slab(self.frame_at(0))
             g = sf.grid
             dens = sf.density[list(sf.sources).index(self.source), sf.z_index(self.z)].astype(np.float64)
             xx, yy = np.meshgrid(g.x_centres, g.y_centres)
+            if self.scene.reflected:
+                yy = -yy
             okc = ((self.det.expected_counts(dens, self.scale) >= thr) & (np.hypot(xx - sx, yy - sy) >= self.start_min_dist)
                    & (xx >= self.prior_x[0]) & (xx <= self.prior_x[1]) & (yy >= self.prior_y[0]) & (yy <= self.prior_y[1]))
             cells = np.flatnonzero(okc.ravel())

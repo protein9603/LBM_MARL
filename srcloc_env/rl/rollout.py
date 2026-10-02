@@ -52,6 +52,7 @@ class RolloutCollector:
         self.episode_idx = int(episode_idx)              # index of the NEXT episode to start
         self.obs: np.ndarray | None = None
         self.ep_return = 0.0
+        self.ep_info = 0.0
         self.ep_len = 0
 
     def _masks(self) -> np.ndarray:
@@ -61,7 +62,7 @@ class RolloutCollector:
         obs, _ = self.env.reset(seed=episode_seed(self.run_seed, self.proc, self.episode_idx))
         self.episode_idx += 1
         self.obs = np.asarray(obs, dtype=np.float32).reshape(self.n, -1)
-        self.ep_return, self.ep_len = 0.0, 0
+        self.ep_return, self.ep_info, self.ep_len = 0.0, 0.0, 0
 
     def collect(self, net: ActorCritic, n_steps: int, iteration: int) -> dict[str, Any]:
         gen = _rollout_generator(self.run_seed, self.proc, iteration)
@@ -87,12 +88,14 @@ class RolloutCollector:
             applied = info["applied"] if self.n > 1 else [info["applied"]]
             n_applied_masked += sum(1 for x in applied if not x)          # must stay 0: the policy never samples a masked action
             self.ep_return += float(r)
+            self.ep_info += config.ENV_REWARD_INFO * float(info["info_gain"])
             self.ep_len += 1
             buf["rew"][t] = r
             done = bool(term or trunc)
             buf["done"][t] = done
             if done:
-                episodes.append({"proc": self.proc, "episode_idx": self.episode_idx - 1, "ret": self.ep_return, "length": self.ep_len,
+                episodes.append({"proc": self.proc, "episode_idx": self.episode_idx - 1, "ret": self.ep_return, "ret_info": self.ep_info, "ret_time": config.ENV_REWARD_TIME * self.ep_len,
+                                 "ret_terminal": self.ep_return - self.ep_info - config.ENV_REWARD_TIME * self.ep_len, "length": self.ep_len,
                                  "success": bool(info["success"]), "success_strict": bool(info.get("success_strict", False)),
                                  "source": int(info["source"]), "reflected": bool(info["reflected"]), "start_type": info.get("start_type", ""),
                                  "final_error_m": float(info["map_error_m"]), "top_sigma_m": float(info["top_sigma_m"]),

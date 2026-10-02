@@ -18,7 +18,7 @@ import numpy as np
 from srcloc_env import config
 from srcloc_env.env.source_env import default_max_steps, load_scene
 from srcloc_env.eval.episodes import make_episode_list
-from srcloc_env.eval.run_eval import make_env, run_episode, write_records
+from srcloc_env.eval.run_eval import make_env, run_episode, save_step_log, write_records
 from srcloc_env.rl.ppo_policy import PPOPolicy, load_checkpoint
 
 
@@ -27,7 +27,7 @@ def checkpoint_sources() -> list[int]:
 
 
 def evaluate_checkpoint(ckpt: str | Path, out_csv: str | Path, n_per_source: int = config.EVAL_CKPT_EPISODES_PER_SOURCE,
-                        limit: int | None = None, deterministic: bool = config.PPO_EVAL_DETERMINISTIC) -> dict:
+                        limit: int | None = None, deterministic: bool = config.PPO_EVAL_DETERMINISTIC, log_per_source: int = 0) -> dict:
     pol = PPOPolicy(ckpt, alias="ppo", deterministic=deterministic)
     ck = load_checkpoint(ckpt)
     mode = str(ck.get("truth_mode", "F"))                        # the quick evaluation uses the truth mode and horizon the policy was trained on
@@ -39,8 +39,13 @@ def evaluate_checkpoint(ckpt: str | Path, out_csv: str | Path, n_per_source: int
     env = make_env(load_scene(mode), n_drones, mode, max_steps)
     t0 = time.perf_counter()
     recs = []
+    seen: dict[int, int] = {}
     for sp in specs:
-        rec, _ = run_episode(env, pol, sp)
+        keep = seen.get(sp.source, 0) < log_per_source                        # step logs of the first episodes of every source
+        rec, log = run_episode(env, pol, sp, log_steps=keep)
+        if keep:
+            seen[sp.source] = seen.get(sp.source, 0) + 1
+            rec["step_log"] = save_step_log(Path(out_csv).parent / (Path(out_csv).stem + "_steps") / f"ep{sp.episode_id:04d}.npz", log)
         rec.update({"ckpt": str(ckpt), "env_steps": pol.meta.get("env_steps"), "group": "holdout" if sp.source in config.HOLDOUT_SOURCES else "train"})
         recs.append(rec)
     Path(out_csv).parent.mkdir(parents=True, exist_ok=True)
@@ -61,8 +66,9 @@ def main(argv: list[str] | None = None) -> dict:
     ap.add_argument("--n-per-source", type=int, default=config.EVAL_CKPT_EPISODES_PER_SOURCE)
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--deterministic", action="store_true")
+    ap.add_argument("--log-per-source", type=int, default=0, help="save step logs (NPZ) of the first N episodes of every source")
     args = ap.parse_args(argv)
-    res = evaluate_checkpoint(args.ckpt, args.out, args.n_per_source, args.limit, args.deterministic or config.PPO_EVAL_DETERMINISTIC)
+    res = evaluate_checkpoint(args.ckpt, args.out, args.n_per_source, args.limit, args.deterministic or config.PPO_EVAL_DETERMINISTIC, args.log_per_source)
     print("[ckpt_eval] " + ", ".join(f"{k} {v:.3f}" if isinstance(v, float) else f"{k} {v}" for k, v in res.items()), flush=True)
     return res
 

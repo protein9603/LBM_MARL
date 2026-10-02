@@ -33,7 +33,7 @@ LOG_FIELDS = ["iteration", "env_steps", "wall_s", "rollout_s", "update_s", "step
               "return_ma", "length_ma", "entropy_drop_ma", "final_error_ma", "policy_loss", "value_loss", "entropy", "approx_kl",
               "clip_frac", "explained_var", "masked_share", "applied_masked"]
 EP_FIELDS = ["env_steps", "proc", "episode_idx", "source", "reflected", "start_type", "success", "success_strict", "truncated", "length",
-             "ret", "final_error_m", "top_sigma_m", "entropy_drop"]
+             "ret", "ret_info", "ret_time", "ret_terminal", "final_error_m", "top_sigma_m", "entropy_drop"]
 
 
 def _git_commit() -> str:
@@ -58,12 +58,14 @@ def _append_rows(path: Path, fields: list[str], rows: list[dict[str, Any]]) -> N
         w.writerows(rows)
 
 
-def _launch_ckpt_eval(ckpt: Path, out_dir: Path, n_per_source: int, limit: int | None) -> subprocess.Popen:
+def _launch_ckpt_eval(ckpt: Path, out_dir: Path, n_per_source: int, limit: int | None, log_per_source: int = 0) -> subprocess.Popen:
     out_dir.mkdir(parents=True, exist_ok=True)
     cmd = [sys.executable, "-m", "srcloc_env.rl.ckpt_eval", "--ckpt", str(ckpt), "--out", str(out_dir / (ckpt.stem + ".csv")),
            "--n-per-source", str(n_per_source)]
     if limit is not None:
         cmd += ["--limit", str(limit)]
+    if log_per_source:
+        cmd += ["--log-per-source", str(log_per_source)]
     log = (out_dir / (ckpt.stem + ".log")).open("w", encoding="utf-8")
     return subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT)
 
@@ -89,12 +91,19 @@ def train(a: argparse.Namespace) -> dict[str, Any]:
     if resume:
         ck = torch.load(latest, map_location="cpu", weights_only=False)
         net = net_from_state(ck["learner"])
+        ck_mode = str(ck.get("truth_mode", "F"))
+        ck_steps = int(ck.get("max_steps") or default_max_steps(ck_mode))
+        if (ck_mode, ck_steps) != (mode, max_steps):
+            raise ValueError(f"--resume: {latest} was trained with truth mode {ck_mode} and {ck_steps}-step episodes, this call asks for {mode} / {max_steps}; pass the same --truth-mode / --max-steps")
         it, steps, ep_idx = int(ck["iteration"]), int(ck["env_steps"]), list(ck["episode_idx"])
         init_note = f"resumed from {latest} at iteration {it}"
     elif a.init_from:
         ck0 = torch.load(Path(a.init_from), map_location="cpu", weights_only=False)
         net0 = net_from_state(ck0["learner"])
         net = net0.widened(obs_dim)
+        ck0_mode = str(ck0.get("truth_mode", "F"))
+        if ck0_mode != mode:
+            print(f"[train] WARNING: --init-from checkpoint was trained in truth mode {ck0_mode}, this run uses {mode}", flush=True)
         init_note = f"initialised from {a.init_from} (input widened {net0.obs_dim} -> {obs_dim})"
     else:
         net = ActorCritic(obs_dim)
@@ -132,7 +141,7 @@ def train(a: argparse.Namespace) -> dict[str, Any]:
 
     def pump_evals() -> None:
         if pending and (running[0] is None or running[0].poll() is not None):
-            running[0] = _launch_ckpt_eval(pending.pop(0), run_dir / "ckpt_eval", int(a.ckpt_eval_per_source), a.ckpt_eval_limit)
+            running[0] = _launch_ckpt_eval(pending.pop(0), run_dir / "ckpt_eval", int(a.ckpt_eval_per_source), a.ckpt_eval_limit, int(a.ckpt_eval_log_per_source))
             all_evals.append(running[0])
 
     try:
@@ -198,6 +207,7 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--ckpt-every-steps", type=int, default=0, help="checkpoint every N team steps (0 = total / 10); a checkpoint is also written every 30 min")
     ap.add_argument("--no-ckpt-eval", dest="ckpt_eval", action="store_false", help="skip the background quick evaluation of checkpoints")
     ap.add_argument("--ckpt-eval-per-source", type=int, default=config.EVAL_CKPT_EPISODES_PER_SOURCE)
+    ap.add_argument("--ckpt-eval-log-per-source", type=int, default=1, help="step logs of the first N quick-evaluation episodes of every source (sample trajectories)")
     ap.add_argument("--ckpt-eval-limit", type=int, default=None, help="evaluate only the first N episodes of the list (smoke tests)")
     return ap
 

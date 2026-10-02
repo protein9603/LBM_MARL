@@ -35,13 +35,33 @@ from srcloc_env.eval.metrics import aggregate, paired_differences, table2_markdo
 RECORD_FIELDS = ["method", "n_drones", "episode_id", "seed", "source", "frame", "scale", "mode", "start_type", "success", "steps",
                  "success_strict", "steps_strict", "min_error_m",
                  "final_error_m", "first_detection_step", "declared_step", "declared_error_m", "path_length_m", "n_masked",
-                 "entropy_final", "top_sigma_final_m", "wall_s", "step_ms_median", "tie_tol", "tie_frac", "all_tied_frac"]
+                 "entropy_final", "top_sigma_final_m", "wall_s", "step_ms_median", "tie_tol", "tie_frac", "all_tied_frac", "calib_2sigma_frac"]
 
 
 def make_env(scene: Scene, n_drones: int, mode: str, max_steps: int | None = None) -> SourceLocEnv:
     kw = dict(sources=config.ALL_SOURCES, truth_mode=mode, reflect_prob=0.0, terminate_on_success=not config.EVAL_NO_EARLY_STOP,
               max_steps=int(max_steps) if max_steps is not None else default_max_steps(mode))
     return MultiDroneEnv(scene, n_drones=n_drones, **kw) if n_drones > 1 else SourceLocEnv(scene, **kw)
+
+
+def truth_in_2sigma(env: SourceLocEnv, truth_xy: np.ndarray) -> bool:
+    """Is the true source inside the 2-sigma ellipse (Mahalanobis distance squared <= 4) of the top GMM component? (belief calibration, spec 9 item 10)"""
+    g = env.gmm
+    d = np.asarray(truth_xy, dtype=float) - g.means[0]
+    try:
+        return bool(d @ np.linalg.solve(g.covs[0], d) <= 4.0)
+    except np.linalg.LinAlgError:
+        return False
+
+
+def save_step_log(path: Path, log: dict) -> str:
+    """Write one step log (arrays + JSON meta of the scalars) as compressed NPZ; returns the path (spec 11.7)."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    meta = dict(log.get("meta", {}))                                  # scalars live in the JSON meta, per-step arrays under their own keys
+    meta.update({k: v for k, v in log.items() if k != "meta" and not isinstance(v, np.ndarray)})
+    np.savez_compressed(path, **{k: v for k, v in log.items() if isinstance(v, np.ndarray)}, meta=json.dumps(meta))
+    return str(path)
 
 
 def run_episode(env: SourceLocEnv, policy, spec: EpisodeSpec, log_steps: bool = False) -> tuple[dict, dict | None]:
@@ -59,8 +79,10 @@ def run_episode(env: SourceLocEnv, policy, spec: EpisodeSpec, log_steps: bool = 
     start_type = info.get("start_type", "")
     declared_err = None
     step_ms = []
+    start_xy = info["drone_xy"].reshape(n, 2).copy()
+    inside = []
     log: dict[str, list] = {k: [] for k in ("drone_xy", "y", "action", "applied", "gmm_w", "gmm_mu", "gmm_cov", "gmm_mask",
-                                              "map_xy", "entropy", "top_sigma", "map_error")} if log_steps else None
+                                              "map_xy", "entropy", "top_sigma", "map_error", "frame", "reward", "calib_inside")} if log_steps else None
     terminated = truncated = False
     while not (terminated or truncated):
         acts = policy.act(env, obs, info)
@@ -80,6 +102,7 @@ def run_episode(env: SourceLocEnv, policy, spec: EpisodeSpec, log_steps: bool = 
         if first_strict is None and info["success_strict"]:
             first_strict = info["t"]
         min_err = min(min_err, float(info["map_error_m"]))
+        inside.append(truth_in_2sigma(env, info["truth_xy"]))
         if declared_step is None and info["top_sigma_m"] < env.success_sigma:
             declared_step, declared_err = info["t"], float(info["map_error_m"])
         if log is not None:
@@ -88,20 +111,24 @@ def run_episode(env: SourceLocEnv, policy, spec: EpisodeSpec, log_steps: bool = 
             log["applied"].append(np.array(applied)); log["gmm_w"].append(g.weights.copy()); log["gmm_mu"].append(g.means.copy())
             log["gmm_cov"].append(g.covs.copy()); log["gmm_mask"].append(g.mask.copy()); log["map_xy"].append(env.pf.map_estimate().copy())
             log["entropy"].append(env.h_prev); log["top_sigma"].append(g.top_sigma()); log["map_error"].append(float(info["map_error_m"]))
+            log["frame"].append(int(info["frame"])); log["reward"].append(float(r)); log["calib_inside"].append(inside[-1])
     rec = {"method": policy.name, "n_drones": n, "episode_id": spec.episode_id, "seed": spec.seed, "source": spec.source,
-           "frame": spec.frame, "scale": spec.scale, "mode": spec.mode, "start_type": start_type, "success": first_ok is not None,
+           "frame": spec.frame, "scale": spec.scale, "mode": env.truth_mode, "start_type": start_type, "success": first_ok is not None,
            "steps": int(first_ok if first_ok is not None else info["t"]), "success_strict": first_strict is not None,
            "steps_strict": int(first_strict if first_strict is not None else info["t"]), "min_error_m": min_err,
            "final_error_m": float(info["map_error_m"]), "first_detection_step": first_det, "declared_step": declared_step,
            "declared_error_m": declared_err, "path_length_m": path_len, "n_masked": n_masked, "entropy_final": float(env.h_prev),
            "top_sigma_final_m": float(info["top_sigma_m"]), "wall_s": time.perf_counter() - t_wall,
-           "step_ms_median": float(np.median(step_ms)) if step_ms else float("nan")}
+           "step_ms_median": float(np.median(step_ms)) if step_ms else float("nan"),
+           "calib_2sigma_frac": float(np.mean(inside)) if inside else float("nan")}
     if hasattr(policy, "stats"):
         rec.update(policy.stats())                                         # e.g. GMM-Infotaxis tie statistics
     if log is not None:
         log = {k: np.asarray(v) for k, v in log.items()}
-        log.update({"truth_xy": info["truth_xy"], "source": spec.source, "frame": spec.frame, "scale": spec.scale,
-                    "seed": spec.seed, "success": first_ok is not None, "method": policy.name, "n_drones": n, "start_type": start_type})
+        log["truth_xy"] = np.asarray(info["truth_xy"])
+        log["start_xy"] = start_xy
+        log["meta"] = {"source": spec.source, "frame": spec.frame, "scale": spec.scale, "seed": spec.seed, "success": first_ok is not None,
+                       "method": policy.name, "n_drones": n, "start_type": start_type, "mode": env.truth_mode, "max_steps": int(env.max_steps)}
     return rec, log
 
 
@@ -132,11 +159,7 @@ def _worker(task: dict) -> dict:
         policy = make_policy(task["method"], **kw)
     rec, log = run_episode(env, policy, spec, log_steps=task["log_steps"])
     if log is not None:
-        p = Path(task["step_dir"]) / f"{task['method']}_{key[0]}drones_ep{spec.episode_id:04d}.npz"
-        p.parent.mkdir(parents=True, exist_ok=True)
-        np.savez_compressed(p, **{k: v for k, v in log.items() if isinstance(v, np.ndarray)},
-                            meta=json.dumps({k: v for k, v in log.items() if not isinstance(v, np.ndarray)}))
-        rec["step_log"] = str(p)
+        rec["step_log"] = save_step_log(Path(task["step_dir"]) / f"{task['method']}_{key[0]}drones_ep{spec.episode_id:04d}.npz", log)
     return rec
 
 
@@ -150,7 +173,7 @@ def write_records(path: Path, recs: list[dict]) -> None:
 
 _INT = ("n_drones", "episode_id", "seed", "source", "frame", "steps", "steps_strict", "n_masked")
 _FLOAT = ("scale", "final_error_m", "min_error_m", "path_length_m", "entropy_final", "top_sigma_final_m", "wall_s", "step_ms_median",
-          "tie_tol", "tie_frac", "all_tied_frac")
+          "tie_tol", "tie_frac", "all_tied_frac", "calib_2sigma_frac")
 _OPT_INT = ("first_detection_step", "declared_step")
 _BOOL = ("success", "success_strict")
 
@@ -199,7 +222,7 @@ def import_records(out_dir: Path, spec: str) -> int:
 
 def build_summary(out_dir: Path, recs: list[dict], tag: str, mode: str, total_s: float, processes: int, methods: list[str],
                   max_steps: int | None = None) -> dict:
-    max_steps = int(max_steps) if max_steps is not None else default_max_steps(mode)
+    max_steps = int(max_steps) if max_steps else default_max_steps(mode)        # None and 0 both mean the mode default
     by_cfg: dict[str, list[dict]] = {}
     for r in recs:
         by_cfg.setdefault(f"{r['method']} ({r['n_drones']})", []).append(r)
@@ -240,7 +263,7 @@ def main(argv: list[str] | None = None) -> dict:
     ap.add_argument("--sources", type=int, nargs="*", default=list(config.ALL_SOURCES))
     ap.add_argument("--episodes", type=Path, default=None, help="existing episodes.csv (overrides --n-per-source / --sources)")
     ap.add_argument("--base-seed", type=int, default=config.EVAL_BASE_SEED)
-    ap.add_argument("--mode", choices=list(config.ENV_MODES), default="F")
+    ap.add_argument("--mode", choices=list(config.ENV_MODES), default=None, help="truth mode (default F; with --summarize-only: taken from the records)")
     ap.add_argument("--scale-fixed", type=float, default=None)
     ap.add_argument("--max-steps", type=int, default=None, help="episode horizon (default 300 in Mode F, config.T2_MAX_STEPS = 150 in Mode T2)")
     ap.add_argument("--processes", type=int, default=config.EVAL_PROCESSES)
@@ -261,13 +284,21 @@ def main(argv: list[str] | None = None) -> dict:
         for spec in args.merge_from:
             print(f"[eval] imported {import_records(out_dir, spec)} records from {spec}")
         recs = load_records(out_dir)
+        modes = sorted({r["mode"] for r in recs})
+        if len(modes) > 1 or (args.mode and modes and args.mode != modes[0]):
+            raise SystemExit(f"--summarize-only: records in {out_dir} have truth mode(s) {modes} but --mode is {args.mode}; use one --tag per truth mode")
+        args.mode = modes[0] if modes else (args.mode or "F")                        # horizon and labels follow the records, not the CLI default
         methods = []
         for r in recs:
             if r["method"] not in methods:
                 methods.append(r["method"])
         return build_summary(out_dir, recs, args.tag, args.mode, 0.0, 0, methods, args.max_steps)
+    args.mode = args.mode or "F"
     if args.episodes is not None:
         specs = load_episode_list(args.episodes)
+        bad = sorted({sp.mode for sp in specs if sp.mode != args.mode})
+        if bad:
+            raise SystemExit(f"--episodes {args.episodes} holds mode(s) {bad} but --mode is {args.mode}: the frame would be misread; pass --mode {bad[0]}")
     else:
         specs = make_episode_list(args.sources, args.n_per_source, args.base_seed, args.mode, scale_fixed=args.scale_fixed)
     if args.max_episodes is not None:

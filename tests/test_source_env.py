@@ -292,3 +292,36 @@ def test_plume_start_rule(scene):
     env0 = _env(scene, start_plume_frac=0.0)
     assert all(env0.reset(seed=s)[1]["start_type"] == "random" for s in range(4))
     assert env0.reset(seed=1, options={"start_xy": (20.0, -60.0)})[1]["start_type"] == "given"
+
+
+
+class SlabSyntheticBackend(SyntheticBackend):
+    """SyntheticBackend that also exposes slab() (like LdmSlabBackend), so the direct plume-start draw is used."""
+
+    def slab(self, frame_index):
+        from srcloc_env.field.concentration_field import SlabFrame
+        grid = SlabGrid(0.0, -75.0, 40, 30, 5.0)
+        xx, yy = np.meshgrid(grid.x_centres, grid.y_centres)
+        dens = np.zeros((len(self.sources), 1, grid.ny, grid.nx), np.float32)
+        for k, (sid, (sx, sy)) in enumerate(sorted(self.sources.items())):
+            dens[k, 0] = self.amp * np.exp(-((xx - sx) ** 2 + (yy - sy) ** 2) / (2 * self.sigma ** 2))
+        return SlabFrame(index=int(frame_index), density=dens, z_levels=(config.DRONE_Z,), sources=tuple(sorted(self.sources)), grid=grid)
+
+
+def test_reflected_scene_draws_plume_starts_like_the_original(scene):
+    """The direct plume-start draw must also work in a y-reflected scene (mirrored cell centres): starts are detectable under the
+    mirrored density and the plume share equals the original scene's (review D11: reflected episodes used to fall back to random)."""
+    sc = Scene.build(_wind(), _obstacles(), SlabSyntheticBackend(), SOURCES, AdjointParams(K=16.0, lam=0.005), SlabGrid(0.0, -75.0, 40, 28, 5.0))
+    scr = sc.reflected_scene()
+    kw = dict(start_plume_frac=1.0, start_min_dist=30.0, scene_reflected=scr)
+    n_plume = {False: 0, True: 0}
+    for refl in (False, True):
+        env = _env(sc, **kw)
+        for seed in range(25):
+            _, info = env.reset(seed=seed, options={"reflect": refl, "source": 1})
+            if info["start_type"] == "plume":
+                n_plume[refl] += 1
+                thr = config.ENV_START_PLUME_MIN_COUNTS_FACTOR * env.det.detection_threshold_cps() * env.det.T
+                dens = sc.backend.density([1], info["drone_xy"], env.frame_at(0), config.DRONE_Z, 1.0, flip_y=refl)
+                assert float(env.det.expected_counts(dens, env.scale)[0]) >= thr * 0.999        # detectable at the START (mirrored density for reflected)
+    assert n_plume[True] >= 20 and n_plume[False] >= 20

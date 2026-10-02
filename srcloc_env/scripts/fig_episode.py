@@ -49,9 +49,20 @@ def render(npz: Path, out: Path, fractions=(0.1, 0.3, 0.6, 1.0), margin_m: float
     src, frame = int(meta["source"]), int(meta["frame"])
     be = backend if backend is not None else LdmSlabBackend()
     om = om if om is not None else ObstacleMap.load()
+    mode = str(meta.get("mode", "F"))
+    time_varying = mode == "T2"                                       # Mode T2: the truth field of step t is frame0 + t (1 frame per step)
+
+    def frame_of(t: int) -> int:
+        if "frame" in log:
+            return int(log["frame"][t - 1])
+        return int(min(config.N_FILES - 1, frame + t - 1)) if time_varying else frame
+
+    def dens_of(fr: int) -> np.ndarray:
+        sf_ = be.slab(fr)
+        return sf_.density[list(sf_.sources).index(src), sf_.z_index(config.DRONE_Z)].astype(float)            # (ny, nx)
+
     sf = be.slab(frame)
     g = sf.grid
-    dens = sf.density[list(sf.sources).index(src), sf.z_index(config.DRONE_Z)].astype(float)            # (ny, nx)
     pts = log["drone_xy"].reshape(-1, 2)
     lo = np.minimum(pts.min(axis=0), truth) - margin_m
     hi = np.maximum(pts.max(axis=0), truth) + margin_m
@@ -62,12 +73,13 @@ def render(npz: Path, out: Path, fractions=(0.1, 0.3, 0.6, 1.0), margin_m: float
             lo[a], hi[a] = mid - 0.275 * other, mid + 0.275 * other
     det = Detector()
     yn = det.normalise(log["y"].reshape(-1)).reshape(T, D)
-    vmax = max(float(dens.max()), 1e-6)
     steps = sorted({max(1, min(T, int(round(f * T)))) for f in fractions})
+    dens_by_step = {t: dens_of(frame_of(t)) for t in steps}
+    vmax = max(max(float(d_.max()) for d_ in dens_by_step.values()), 1e-6)
     fig, axes = plt.subplots(1, len(steps), figsize=(max(11.0, 4.6 * len(steps)), 5.2), constrained_layout=True, squeeze=False)
     cols = ["tab:blue", "tab:green", "tab:purple"]
     for ax, t in zip(axes[0], steps):
-        im = ax.imshow(np.log10(np.maximum(dens, vmax * 1e-4)), origin="lower", extent=(g.x0, g.x0 + g.nx * g.res, g.y0, g.y0 + g.ny * g.res),
+        im = ax.imshow(np.log10(np.maximum(dens_by_step[t], vmax * 1e-4)), origin="lower", extent=(g.x0, g.x0 + g.nx * g.res, g.y0, g.y0 + g.ny * g.res),
                        cmap="Greys", vmin=np.log10(vmax) - 4, vmax=np.log10(vmax), alpha=0.75, interpolation="nearest")
         ox, oy = np.meshgrid(om.x, om.y, indexing="ij")
         ax.contour(ox, oy, om.occ.astype(float), levels=[0.5], colors="0.35", linewidths=0.6)
@@ -83,15 +95,15 @@ def render(npz: Path, out: Path, fractions=(0.1, 0.3, 0.6, 1.0), margin_m: float
         ax.plot(*log["map_xy"][t - 1], marker="x", color="tab:red", markersize=9, markeredgewidth=2, zorder=5)
         ax.plot(*truth, marker="*", color="gold", markeredgecolor="k", markersize=16, zorder=6)
         ax.set_xlim(lo[0], hi[0]); ax.set_ylim(lo[1], hi[1]); ax.set_aspect("equal")
-        ax.set_title(f"step {t}/{T}: MAP error {log['map_error'][t - 1]:.0f} m, top sigma {log['top_sigma'][t - 1]:.0f} m", fontsize=9)
+        ax.set_title(f"step {t}/{T}" + (f", frame {frame_of(t)}" if time_varying else "") + f": MAP error {log['map_error'][t - 1]:.0f} m, top sigma {log['top_sigma'][t - 1]:.0f} m", fontsize=9)
         ax.set_xlabel("x [m]")
     axes[0][0].set_ylabel("y [m]")
     cb = fig.colorbar(sc, ax=axes[0].tolist(), shrink=0.8, pad=0.01)
     cb.set_label("normalised log count log(1+y)/log(1+y_max)")
     ok = "success" if meta["success"] else "no success"
-    fig.suptitle(f"{meta['method']} ({D} drone{'s' if D > 1 else ''}), source {src}, frozen LDM frame {frame} "
+    fig.suptitle(f"{meta['method']} ({D} drone{'s' if D > 1 else ''}), source {src}, " + (f"time-varying truth (Mode T2), start frame {frame}" if time_varying else f"frozen LDM frame {frame}") + f" "
                  f"(step {config.index_to_step(frame)}) [interpretation A], scale {float(meta['scale']):.2f}: {ok}\n"
-                 f"grey = 15 m slab density of the source (log, 4 decades), red = 2-sigma GMM ellipses, x = MAP, star = truth", fontsize=9)
+                 f"grey = 15 m slab density of the source at the panel's step (log, 4 decades), red = 2-sigma GMM ellipses, x = MAP, star = truth", fontsize=9)
     out = Path(out)
     out.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out, dpi=config.FIG_DPI_FINAL)
