@@ -21,6 +21,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
+video = ["pyvista>=0.44", "imageio[ffmpeg]>=2.34"]     # scripts/render_episode_3d.py (3-D episode video)
 
 [tool.setuptools.packages.find]
 include = ["srcloc_env*"]

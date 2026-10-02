@@ -33,3 +33,9 @@ threadpoolctl==3.7.0
 torch==2.14.0+cpu
 typing_extensions==4.16.0
 vtk==9.7.1
+ImageIO==2.38.0
+imageio-ffmpeg==0.6.0
+pooch==1.9.0
+pyvista==0.49.0
+pyvista-validation==0.2.2
+scooby==0.12.0
