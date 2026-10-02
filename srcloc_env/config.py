@@ -589,3 +589,57 @@ SLAB_STACK_PATH = CACHE_DIR / "slab_stack_z15.npy"     # all N_FILES frames of t
 SLAB_STACK_META_PATH = CACHE_DIR / "slab_stack_z15.json"
 T2_MAX_STEPS = PF_ADJ_N_STEPS                          # 150: a T2 episode (frame 400 + t, 1 frame per step, start 400..450) stays inside the cached frames 400..599; the field evolves during the WHOLE episode (no zero-order hold) [D11]
 T2_TRAIN_START_RANGE = FRAME_START_MODE_T2             # (400, 450): episode start frame, uniform [D8-2 / D11]
+
+
+# --------------------------------------------------------------------------------------
+# D11 - 3-D episode video (scripts/render_episode_3d.py, spec 11); moved here from the module, same names and values
+# --------------------------------------------------------------------------------------
+R3D_WINDOW = (1280, 720)   # video size (width, height) [px]
+R3D_FPS = 10   # playback frames per second
+R3D_STRIDE = 2   # log steps advanced per video frame (10 fps x 2 = 20 steps/s)
+R3D_HOLD_SECONDS = 2.0   # the last frame (with the banner) is held this long
+R3D_BANNER_FRAC = 0.10   # the closing banner covers the last fraction of the step frames (and the hold)
+R3D_TRAIL_STEPS = 30   # fading trail length [steps] (spec 11.5)
+R3D_MAX_PARTICLES = 20_000   # airborne-particle subsample size (spec 11.5 allows 100k)
+R3D_DENSITY_DECADES = 4.0   # colour range of the 15 m density plane below its episode maximum (spec 11.5)
+R3D_BUILDING_MAX_TRIANGLES = 40_000   # the STL (15 169 triangles) is decimated only above this
+R3D_ELEVATION_DEG = 35.0   # camera elevation (spec 11.5)
+R3D_AZIMUTH_DEG = -60.0   # camera azimuth: direction of the camera from the focal point is (cos az, sin az); +x points to the right of the picture
+R3D_FOV_DEG = 30.0   # vertical view angle
+R3D_ZOOM_START_FRAC = 0.8   # zoom towards the source in the last 20 % of the frames (spec 11.5)
+R3D_RADIUS_MIN_M = 200.0   # smallest horizontal half-extent that stays in view before the zoom [m]
+R3D_RADIUS_ZOOM_M = 90.0   # horizontal half-extent at the end of the zoom [m]
+R3D_RADIUS_MARGIN = 1.3   # margin factor on the half-extent of drones + source
+R3D_CAMERA_SMOOTH = 9   # centred moving-average window of the camera framing [video frames]
+R3D_ZOOM_ORBIT_DEG = 25.0   # camera azimuth turns by this angle during the final zoom (parallax for depth perception)
+R3D_FOCAL_Z_M = 15.0   # camera focal height [m]
+R3D_UNIT_FRAC = 0.01   # marker scale unit = this fraction of the camera distance (constant on-screen size)
+R3D_COLUMN_HEIGHT_M = 60.0   # height of the source column [m]
+R3D_ELLIPSE_SIGMA = 2.0   # drawn Mahalanobis radius of the GMM ellipses
+R3D_ELLIPSE_POINTS = 72
+R3D_TOP_COMPONENTS = 3   # GMM components drawn (the three of config.GMM_K)
+R3D_COUNT_HIGH_FACTOR = 10.0   # 'high count' (full red) = this factor times the Currie decision count
+R3D_DRONE_COLOURS = ((0.10, 0.30, 0.85), (0.05, 0.62, 0.30), (0.55, 0.20, 0.75))   # sphere hue per drone
+R3D_TRAIL_BASE = ((0.52, 0.60, 0.78), (0.52, 0.74, 0.58), (0.68, 0.56, 0.78))   # background trail grey with a drone tint
+R3D_COLOUR_DETECT = (1.00, 0.60, 0.05)   # orange: at the detection threshold
+R3D_COLOUR_HIGH = (0.85, 0.05, 0.05)   # red: high count
+R3D_COLOUR_BELIEF = (0.78, 0.05, 0.62)   # magenta: GMM ellipses and MAP marker
+R3D_COLOUR_TRUTH = (1.00, 0.78, 0.05)   # gold: true source
+R3D_DENSITY_CMAP = "viridis"
+R3D_GROUND_MARGIN_M = 1500.0   # the ground plane extends this far beyond the LDM domain (no visible platform edge)
+R3D_CRF = 20   # x264 constant rate factor
+R3D_BACKGROUND = ("white", "lightsteelblue")   # (bottom, top) of the background gradient
+R3D_FONT_UNITS_720 = 11.0   # HUD font size (pyvista units, 1 unit = 2 px) in a 720 px high window; EVERY text size scales linearly with the height
+R3D_FONT_UNITS_MIN = 1.5   # only a guard against a zero-size font in absurdly small windows (no practical floor)
+R3D_MARGIN_PX_720 = 8.0   # outer margin of the text panels in a 720 px high window (scales with the height)
+R3D_BANNER_FONT_SCALE = 1.7   # banner font = this factor times the HUD font, shrunk until the text fits R3D_BANNER_MAX_WIDTH_FRAC
+R3D_BANNER_MAX_WIDTH_FRAC = 0.60   # the banner (anchored at the bottom centre) is at most this fraction of the window width
+R3D_PARTICLE_CMAP = "plasma"   # airborne particles are coloured by altitude with this colour map ...
+R3D_PARTICLE_Z_RANGE = (0.0, 100.0)   # ... over this height range [m] (1 % / 50 % / 99 % of the airborne particles: ~1 / 15-30 / 70-110 m)
+R3D_COLOUR_RELEASE = (0.55, 0.25, 0.00)   # dark orange-brown: the release-height ring at config.SOURCE_Z
+R3D_RELEASE_RING_UNITS = 2.6   # release ring radius in marker units (R3D_UNIT_FRAC x camera distance)
+R3D_STOP_AFTER_SECONDS = 3.0   # --stop-at-localisation: the video ends this many seconds (of video) after the localisation picture, plus the R3D_HOLD_SECONDS hold of the last picture
+R3D_ILLUSTRATIVE_FRAMES = (400, 599)   # --illustrative: the field cycles over these cached frames (inclusive; spec 11.3 option 3)
+R3D_ILLUSTRATIVE_SECONDS = 10.0   # --illustrative: clip length incl. the hold [s] (spec 11.3: <= 10 s)
+R3D_ILLUSTRATIVE_WATERMARK = "illustrative - not the truth seen by the policy"
+R3D_PRESETS = {"final": {"width": 1920, "height": 1080, "stride": 1, "fps": 30, "steps_per_second": 5.0}}   # spec 11.5: 1920 x 1080, 5 steps/s, 30 fps encoding

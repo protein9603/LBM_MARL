@@ -60,9 +60,19 @@ def check_json(path: Path, keys: tuple[str, ...] = ()) -> str | None:
     return f"missing keys {miss}" if miss else None
 
 
-def check_mp4(path: Path, min_frames: int = 5) -> str | None:
+def _decode_mp4(path: Path, tries: int = 3) -> list:
     import imageio.v3 as iio
-    frames = [f for f in iio.imiter(path)]
+    last: Exception | None = None
+    for _ in range(tries):                                  # imageio gives up after 10 s when the machine is loaded: retry
+        try:
+            return [f for f in iio.imiter(path)]
+        except Exception as exc:   # noqa: BLE001
+            last = exc
+    raise last  # type: ignore[misc]
+
+
+def check_mp4(path: Path, min_frames: int = 5) -> str | None:
+    frames = _decode_mp4(path)
     if len(frames) < min_frames:
         return f"only {len(frames)} frames (< {min_frames})"
     if frames[0].std() < 3.0 or frames[-1].std() < 3.0:
@@ -150,13 +160,15 @@ def step_train(a: argparse.Namespace, out: Path, rep: Report) -> dict[str, Path]
         plans.append(("smoke_1d", 1, max(a.steps // 2, 512), False))
     for name, n, steps, ckpt_eval in plans:
         t0 = time.perf_counter()
+        reuse = bool(a.skip_train)
         cmd = [PY, "-u", "-m", "srcloc_env.rl.train", "--n-drones", str(n), "--run-seed", "1", "--run-name", name, "--out-root", str(out / "train"),
                "--truth-mode", a.truth_mode, "--total-steps", str(steps), "--n-steps", str(a.n_steps), "--procs", str(a.procs),
                "--ckpt-every-steps", str(a.ckpt_every), "--log-every", "1", "--ckpt-eval-per-source", "1", "--ckpt-eval-log-per-source", "1"]
         if not ckpt_eval:
             cmd.append("--no-ckpt-eval")
-        rc = run_cmd(cmd, out / "logs" / f"train_{name}.log")
-        rep.step(f"train {name} ({n} drone(s), {a.truth_mode}, {steps} team steps)", time.perf_counter() - t0, rc == 0, "" if rc == 0 else f"exit {rc}, see logs/train_{name}.log")
+        rc = 0 if reuse else run_cmd(cmd, out / "logs" / f"train_{name}.log")
+        rep.step(f"train {name} ({n} drone(s), {a.truth_mode}, {steps} team steps)" + (" [reused, validated only]" if reuse else ""), time.perf_counter() - t0, rc == 0,
+                 "" if rc == 0 else f"exit {rc}, see logs/train_{name}.log")
         d = out / "train" / name
         runs[name] = d
         if rc != 0:
@@ -184,9 +196,9 @@ def step_eval(a: argparse.Namespace, out: Path, rep: Report, train_dir: Path) ->
     methods = ["random", "lawnmower", "greedy_map"] + (["gmm_infotaxis"] if a.with_infotaxis else [])
     cmd = [PY, "-u", "-m", "srcloc_env.eval.run_eval", "--mode", a.truth_mode, "--methods", *methods, "--ppo", f"ppo_smoke={train_dir / 'final.pt'}",
            "--n-drones", str(a.n_drones), "--n-per-source", str(a.eval_per_source), "--processes", str(a.procs), "--log-steps", "--tag", "smoke", "--out-dir", str(ed)]
-    rc = run_cmd(cmd, out / "logs" / "eval.log")
-    rep.step(f"evaluation ({len(methods) + 1} methods, {a.n_drones} drone(s), 13 sources x {a.eval_per_source})", time.perf_counter() - t0, rc == 0,
-             "" if rc == 0 else f"exit {rc}, see logs/eval.log")
+    rc = 0 if a.skip_eval else run_cmd(cmd, out / "logs" / "eval.log")
+    rep.step(f"evaluation ({len(methods) + 1} methods, {a.n_drones} drone(s), 13 sources x {a.eval_per_source})" + (" [reused, validated only]" if a.skip_eval else ""),
+             time.perf_counter() - t0, rc == 0, "" if rc == 0 else f"exit {rc}, see logs/eval.log")
     if rc != 0:
         return ed
     sec = "2 evaluation"
@@ -289,11 +301,10 @@ def main(argv: list[str] | None = None) -> int:
     runs = {f"smoke_{a.n_drones}d": out / "train" / f"smoke_{a.n_drones}d"}
     if (out / "train" / "smoke_1d").exists():
         runs["smoke_1d"] = out / "train" / "smoke_1d"
-    if not a.skip_train:
-        runs = step_train(a, out, rep)
+    runs = step_train(a, out, rep)
     main_run = runs[f"smoke_{a.n_drones}d"]
     eval_dir = out / "eval"
-    if not a.skip_eval and (main_run / "final.pt").exists():
+    if (main_run / "final.pt").exists():
         eval_dir = step_eval(a, out, rep, main_run)
     if not a.skip_figs and (eval_dir / "summary.json").exists():
         step_figures(a, out, rep, runs, eval_dir)
