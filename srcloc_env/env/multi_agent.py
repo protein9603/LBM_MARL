@@ -123,11 +123,19 @@ class MultiDroneEnv(SourceLocEnv):
                     raise ValueError(f"start {p} of drone {i} is not a free position")
             else:
                 p = None
-                for _ in range(config.ENV_START_MAX_BATCHES):
-                    cand = self._sample_start(self.np_random)
-                    if all(np.hypot(*(cand - q)) >= self.min_separation for q in xys):
-                        p = cand
-                        break
+                plume_frac = self.start_plume_frac
+                try:
+                    for attempt in range(2):          # second pass: no plume requirement (a narrow distance ring can leave only a few admissible plume cells)
+                        for _ in range(config.ENV_START_MAX_BATCHES):
+                            cand = self._sample_start(self.np_random)
+                            if all(np.hypot(*(cand - q)) >= self.min_separation for q in xys):
+                                p = cand
+                                break
+                        if p is not None:
+                            break
+                        self.start_plume_frac = 0.0
+                finally:
+                    self.start_plume_frac = plume_frac
                 if p is None:
                     raise RuntimeError(f"no start >= {self.min_separation} m from the other drones found")
             xys.append(np.asarray(p, dtype=np.float64))

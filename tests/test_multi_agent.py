@@ -126,3 +126,25 @@ def test_start_rules_distance_and_separation(scene):
     _, i1 = single.reset(seed=3)
     _, im = env.reset(seed=3)
     assert np.allclose(im["drone_xy"][0], i1["drone_xy"])          # drone 0 identical to the single-drone draw
+
+
+def test_second_drone_start_falls_back_when_the_plume_start_set_is_too_small(scene):
+    """A narrow ring can leave only a few admissible plume cells: if every plume draw is within the minimum separation of drone 0, the
+    second drone falls back to a plain point of the distance ring instead of raising (found by the D12 ring probe)."""
+    env = MultiDroneEnv(scene, n_drones=2, start_plume_frac=1.0, start_min_dist=30.0, start_max_dist=90.0, **{k: v for k, v in KW.items() if k not in ("start_min_dist",)})
+    orig = env._sample_start
+    state = {"first": None, "calls": 0}
+
+    def stuck(rng):
+        state["calls"] += 1
+        if env.start_plume_frac > 0.0:               # plume pass: always the same cell as drone 0 (separation 0 m)
+            if state["first"] is None:
+                state["first"] = orig(rng)
+            env.start_type = "plume"
+            return state["first"].copy()
+        return orig(rng)                              # fallback pass: ordinary ring draws
+
+    env._sample_start = stuck
+    obs, info = env.reset(seed=5)
+    assert env.start_plume_frac == 1.0 and info["drone_xy"].shape == (2, 2)
+    assert float(np.hypot(*(info["drone_xy"][0] - info["drone_xy"][1]))) >= env.min_separation

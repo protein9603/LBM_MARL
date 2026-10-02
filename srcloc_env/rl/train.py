@@ -115,11 +115,15 @@ def train(a: argparse.Namespace) -> dict[str, Any]:
         ck_steps = int(ck.get("max_steps") or default_max_steps(ck_mode))
         if (ck_mode, ck_steps) != (mode, max_steps):
             raise ValueError(f"--resume: {latest} was trained with truth mode {ck_mode} and {ck_steps}-step episodes, this call asks for {mode} / {max_steps}; pass the same --truth-mode / --max-steps")
+        if ck.get("env_kw") is not None and dict(ck["env_kw"]) != env_kw:
+            raise ValueError(f"--resume: the checkpoint was trained with environment options {ck['env_kw']} but this call has {env_kw}; pass the same --sources/--start-*/--obs-version/--shaping options")
         it, steps, ep_idx = int(ck["iteration"]), int(ck["env_steps"]), list(ck["episode_idx"])
         init_note = f"resumed from {latest} at iteration {it}"
     elif a.init_from:
         ck0 = torch.load(Path(a.init_from), map_location="cpu", weights_only=False)
         net0 = net_from_state(ck0["learner"])
+        if str(ck0.get("obs_version", "v1")) != obs_version:
+            raise ValueError(f"--init-from {a.init_from} was trained with observation {ck0.get('obs_version', 'v1')}, this run uses {obs_version}: the first-layer inputs mean different things")
         net = net0.widened(obs_dim)
         ck0_mode = str(ck0.get("truth_mode", "F"))
         if ck0_mode != mode:
@@ -134,9 +138,14 @@ def train(a: argparse.Namespace) -> dict[str, Any]:
     learner = PPOLearner(net, cfg, seed=int(a.run_seed) * 100_003 + it)
     if resume:
         learner.load_optimizers(ck["learner"])
+        for opt in (learner.opt_actor, learner.opt_critic):          # the CLI learning rate wins over the one stored in the optimiser state
+            for grp in opt.param_groups:
+                grp["lr"] = cfg.lr
+        if ck.get("ppo") and ck["ppo"] != cfg.to_dict():
+            print(f"[train] NOTE: PPO settings differ from the checkpoint ({ {k: (ck['ppo'][k], v) for k, v in cfg.to_dict().items() if ck['ppo'].get(k) != v} })", flush=True)
     info = {"args": {k: (str(v) if isinstance(v, Path) else v) for k, v in vars(a).items()}, "ppo": cfg.to_dict(), "obs_dim": obs_dim,
             "n_drones": n, "init": init_note, "git_commit": _git_commit(), "torch": torch.__version__,
-            "train_sources": list(config.TRAIN_SOURCES), "reflect_prob": config.ENV_REFLECT_PROB_TRAIN,
+            "train_sources": list(env_kw.get("sources", config.TRAIN_SOURCES)), "reflect_prob": config.ENV_REFLECT_PROB_TRAIN,
             "success_sigma_m": config.ENV_SUCCESS_SIGMA_M, "success_error_m": config.ENV_SUCCESS_ERROR_M, "obs_version": obs_version, "truth_mode": mode, "max_steps": max_steps,
             "env_kw": env_kw}
     cfg_name = "config.json" if not resume else f"config_resume_{it}.json"

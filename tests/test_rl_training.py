@@ -276,3 +276,17 @@ def test_privileged_features_are_critic_only_and_train_saves_and_checks_the_opti
     with pytest.raises(ValueError, match="priv-critic"):
         _run(["--run-name", "pv2", "--procs", "0", "--n-steps", "32", "--out-root", str(tmp_path), "--no-ckpt-eval", "--n-drones", "2",
               "--total-steps", "32", "--init-from", str(tmp_path / "pv" / "final.pt")], scene, monkeypatch)                # init from a privileged critic without the flag
+
+
+def test_init_from_checks_the_obs_version_and_resume_checks_the_environment_options(scene, tmp_path, monkeypatch):
+    base = ["--procs", "0", "--n-steps", "32", "--out-root", str(tmp_path), "--no-ckpt-eval", "--n-drones", "1"]
+    _run(base + ["--run-name", "a", "--total-steps", "32"], scene, monkeypatch)                                               # v1
+    with pytest.raises(ValueError, match="observation"):
+        _run(base + ["--run-name", "b", "--total-steps", "32", "--obs-version", "v2", "--init-from", str(tmp_path / "a" / "final.pt")], scene, monkeypatch)
+    _run(base + ["--run-name", "c", "--total-steps", "32", "--sources", "1"], scene, monkeypatch)
+    with pytest.raises(ValueError, match="--resume"):
+        _run(base + ["--run-name", "c", "--total-steps", "64", "--resume"], scene, monkeypatch)                              # forgot --sources 1
+    _run(base + ["--run-name", "c", "--total-steps", "64", "--resume", "--sources", "1", "--lr", "1e-3"], scene, monkeypatch)     # new lr is honoured
+    ck = torch.load(tmp_path / "c" / "latest.pt", map_location="cpu", weights_only=False)
+    assert ck["learner"]["opt_actor"]["param_groups"][0]["lr"] == pytest.approx(1e-3)
+    assert '"train_sources": [\n    1\n  ]' in (tmp_path / "c" / "config.json").read_text(encoding="utf-8") or "\"train_sources\": [1]" in (tmp_path / "c" / "config.json").read_text(encoding="utf-8").replace("\n", "").replace(" ", "").replace("\"train_sources\":[1]", "\"train_sources\": [1]")
