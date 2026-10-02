@@ -21,8 +21,8 @@
 | 베이스라인 | `baselines/policies.py` random·lawnmower(바람에 수직, 영역 전체)·greedy-MAP·GMM-Infotaxis(벡터화, 행동 간 공통 난수) | **완료** (D9-2~D9-4; T2-4 예비 배치 병합 요약 t2_4_v3, G2 PASS(형식: 순서는 맞으나 방법 간 차이는 신뢰구간 안)) |
 | 학습기 | `rl/ppo.py` 파라미터 공유 PPO, `rl/rollout.py` 환경 프로세스 풀, `rl/train.py` 학습 루프(체크포인트·CSV 로그), `rl/ckpt_eval.py` 간이 평가, `rl/ppo_policy.py` 평가 어댑터 | **작성됨** (D10-1~4, 테스트 통과). 본 학습은 **미실행** (D10-6~, 아래 6장) |
 | 평가 | 공통 에피소드 시드 목록(`eval/episodes.py`), 평가 배치 러너(`eval/run_eval.py`, 스텝 로그 NPZ), 지표·표 2 집계(`eval/metrics.py`) | **작성됨** (D9-2, `tests/test_baselines.py` 9/9, 실데이터 스모크 통과). 표 2·그림 자동 생성 스크립트와 `eval/check_matrix.py`는 **[미구현]** (S4) |
-| 시각화 | 학습 곡선·궤적 그림 스크립트, 3차원 영상 렌더러 | **[미구현]** (S4; 11장 참조) |
-| 패키지 | torch 2.14(cpu)·gymnasium 1.3·vtk 9.7 설치됨; PyVista·imageio-ffmpeg(영상용) | 영상용 2개 **미설치** |
+| 시각화 | 학습 그림 `fig_training.py`, 평가 그림·표 `fig_eval.py`, 3차원 영상 `render_episode_3d.py` | **구현됨** (D11; 13장 스모크 57개 결과 통과) |
+| 패키지 | torch 2.14(cpu)·gymnasium 1.3·vtk 9.7 설치됨; PyVista·imageio-ffmpeg(영상용) | 영상용 2개 **설치됨**(`pip install -e .[video]`) |
 
 따라서 남은 선행 작업은 PPO 스모크 학습의 속도 실측과 수용 기준 확인(D10-5)이며, 이어서 M1·M2 본 학습을 실행합니다. 계획서 일정(S3 학습 10/8~)은 그대로입니다.
 
@@ -172,7 +172,7 @@
 
 ---
 
-## 7. 학습 결과 분석 시각화 **[미구현]** (`scripts/fig_training.py` 예정; 출력 `분석그림/icrs15/`, 300 dpi PNG + CSV)
+## 7. 학습 결과 분석 시각화 **[구현됨 D11]** (`scripts/fig_training.py` `make_all`; 출력 `분석그림/icrs15/`, 기본 150 dpi, 최종은 `--dpi 300`, PNG + CSV + 매니페스트)
 
 1. **학습 곡선(그림 6)**: x = 환경 스텝(M), y = 성공률 이동평균(100 에피소드) — M1 시드 3개 개별선 + 평균±표준편차 밴드, M2 동일; 수평 기준선 random·lawnmower·greedy-MAP·GMM-Infotaxis(학습 소스 기준 평가값).
 2. 에피소드 반환·길이·성공 스텝 중앙값 vs 환경 스텝(같은 형식).
@@ -224,7 +224,7 @@
 
 ---
 
-## 10. 평가 결과 분석 시각화 **[미구현]** (`scripts/fig_eval.py` 예정)
+## 10. 평가 결과 분석 시각화 **[구현됨 D11]** (`scripts/fig_eval.py` `make_all`; 표 2·그림 7·보정·임계값 곡선·짝지은 차이 3단·효율·오차-스텝·계산 비용·민감도·`figure_sources.csv`)
 
 1. **표 2**: 방법 × 드론 수 × 소스 그룹(**학습-개방 / 학습-비개방 / 홀드아웃**, 상호 배타; 8장 정의) + 학습 전체(9)·관측 가능 전체(12) 요약 행 — 성공률[CI], 성공 스텝 중앙값[CI], 최종 오차 중앙값/p90; 110은 '관측 불가' 별도 행(각주). 소스별 세부 표는 부록.
 2. 성공률 막대(그룹별, CI 오차막대), 방법 × 드론 수 묶음.
@@ -240,7 +240,7 @@
 
 ---
 
-## 11. 최종 3차원 영상 제작 계획 **[미구현]**
+## 11. 최종 3차원 영상 제작 **[렌더러 구현됨 D11 (`scripts/render_episode_3d.py`, PyVista + imageio-ffmpeg); 최종 영상은 평가 배치 후]**
 
 ### 11.1 목적과 내용
 평가 데이터(Mode F 장면)에서 학습된 정책(또는 GMM-Infotaxis)의 드론이 소스를 찾아가는 과정을 **건물 + 확산장 + 드론 경로 + belief**로 보여주는 3차원 애니메이션. 발표 슬라이드 12(그림 7)의 동영상 버전이자 논문 보충 자료.
@@ -336,3 +336,5 @@ python -m srcloc_env.scripts.smoke_pipeline --truth-mode T2 --n-drones 2
 | 5 보고 | 모든 결과를 파일·종류·크기·상태로 정리 | `SMOKE_REPORT.md`, `smoke_manifest.json`; 필수 결과가 없거나 잘못되면 종료 코드 1 |
 
 허용된 건너뜀은 여러 평가 태그가 있어야 하는 민감도 그림(10장 9번) 하나뿐이며, 그 밖의 `skipped`는 실패로 센다. 정보: 스모크는 속도·학습 신호를 판단하지 않는다(극소 학습이므로 성공률은 0이 정상).
+
+**실행 결과(2026-10-02, 2대·T2):** 57개 결과 확인, 56 ok, 건너뜀 1(민감도), 실패 0. 같은 확인은 `--skip-train --skip-eval`로 기존 학습·평가 산출물을 다시 검증하면서 그래프·영상만 새로 만들 수 있다(`smoke_t2_2d_final` 보고서: `<CACHE>/smoke/smoke_t2_2d_final/SMOKE_REPORT.md`). 스모크가 찾은 결함: 스텝 로그의 프레임별 배열이 메타의 시작 프레임 숫자로 덮여 저장되지 않던 문제(수정됨).
