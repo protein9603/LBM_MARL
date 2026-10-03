@@ -26,8 +26,8 @@ LEVELS = ("W0", "W1", "W2")
 LEVEL_LABEL = {"W0": "W0: mean wind + Gaussian plume", "W1": "W1: mean wind + building map", "W2": "W2: CFD wind field"}
 LEVEL_COLOR = {"W0": "#2a78d6", "W1": "#eb6834", "W2": "#1baf7a"}        # categorical slots 1-3 of the reference palette (validated)
 METHODS = (("random", "random"), ("lawnmower", "lawnmower"), ("greedy_map", "greedy-MAP"), ("gmm_infotaxis", "Infotaxis"),
-           ("ppo", "PPO (ours)"), ("oracle_loiter", "oracle" + chr(10) + "(knows source)"))
-GROUP_LABEL = {"all_observable": "12 observable sources (n = 120)", "holdout": "3 held-out sources (n = 30)", "train": "9 training sources (n = 90)",
+           ("ppo", "PPO (ours," + chr(10) + "3 seeds pooled)"), ("oracle_loiter", "oracle" + chr(10) + "(knows source)"))
+GROUP_LABEL = {"all_observable": "12 observable sources (n = 120; PPO 3 seeds, 360)", "holdout": "3 held-out sources (n = 30; PPO 90)", "train": "9 training sources (n = 90)",
                "train_open": "4 open training sources (n = 40)"}
 
 
@@ -39,7 +39,7 @@ def _records(tag: str, method: str, n_drones: int) -> list[dict]:
         return list(csv.DictReader(fh))
 
 
-def collect(levels: dict[str, str], ppo: dict[str, tuple[str, str]], n_drones: int, groups: list[str]) -> list[dict]:
+def collect(levels: dict[str, str], ppo: dict[str, list[tuple[str, str]]], n_drones: int, groups: list[str]) -> list[dict]:
     rows = []
     for lv in LEVELS:
         if lv not in levels:
@@ -48,7 +48,7 @@ def collect(levels: dict[str, str], ppo: dict[str, tuple[str, str]], n_drones: i
             if key == "ppo":
                 if lv not in ppo:
                     continue
-                recs = _records(ppo[lv][0], ppo[lv][1], n_drones)
+                recs = [r for tag, method in ppo[lv] for r in _records(tag, method, n_drones)]     # several seeds pool
             else:
                 recs = _records(levels[lv], key, n_drones)
             for g in groups:
@@ -104,11 +104,11 @@ def main(argv: list[str] | None = None) -> dict:
     ap.add_argument("--dpi", type=int, default=150)
     args = ap.parse_args(argv)
     levels = dict(s.split("=", 1) for s in args.level)
-    ppo = {}
-    for s in args.ppo:
+    ppo: dict[str, list[tuple[str, str]]] = {}
+    for s in args.ppo:                                                   # repeat --ppo LEVEL=... to pool several seeds of one level
         lv, _, rest = s.partition("=")
         tag, _, method = rest.partition(":")
-        ppo[lv] = (tag, method)
+        ppo.setdefault(lv, []).append((tag, method))
     bad = [lv for lv in list(levels) + list(ppo) if lv not in LEVELS]
     if bad:
         raise SystemExit(f"unknown wind level(s) {bad}; use {LEVELS}")
