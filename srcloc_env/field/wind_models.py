@@ -150,11 +150,27 @@ def potential_flow_uv(blocked: np.ndarray, res: float, U: float, dir_deg: float,
     return uv
 
 
-def potential_flow_field(obstacles: ObstacleMap, grid: SlabGrid = SlabGrid(), U: float = config.WIND_MEAN_U,
+def domain_grid(res: float = config.SLAB_RES, x_range: tuple[float, float] = config.DOMAIN_X,
+                y_range: tuple[float, float] = config.DOMAIN_Y) -> SlabGrid:
+    """Cell grid covering the WHOLE drone domain (0..1330 x +-657.5 m at 5 m: 266 x 263 cells, extended to the adjoint grid's x extent) so that the far-field
+    condition sits on the true domain edge (upstream of every building) and the drone observation is defined
+    everywhere; its cell centres contain the adjoint SlabGrid centres exactly (330 = 0 + 66 res, -487.5 = -657.5 + 34 res)."""
+    slab = SlabGrid()                                                       # the adjoint grid sticks out past x = 1315 (330 + 200 x 5 = 1330)
+    x1 = max(x_range[1], slab.x0 + slab.nx * slab.res)
+    y1 = max(y_range[1], slab.y0 + slab.ny * slab.res)
+    nx = int(round((x1 - x_range[0]) / res))
+    ny = int(round((y1 - y_range[0]) / res))
+    return SlabGrid(float(x_range[0]), float(y_range[0]), nx, ny, float(res))
+
+
+def potential_flow_field(obstacles: ObstacleMap, grid: SlabGrid | None = None, U: float = config.WIND_MEAN_U,
                          dir_deg: float = config.WIND_MEAN_DIR_DEG, z: float = config.DRONE_Z) -> WindField:
-    """W1: the potential-flow wind on the slab grid as a one-level WindField (lattice = cell centres; blocked cells
-    are dead nodes so that ``uv_at`` never interpolates across a building); speeds above
-    config.WIND_POTENTIAL_SPEED_CAP * U (corner singularity) are scaled down to that cap."""
+    """W1: the potential-flow wind solved on ``grid`` (default ``domain_grid()``: the whole drone domain, review D13
+    finding: the slab grid's upstream edge x = 330 lies inside the built-up block) as a one-level WindField (lattice =
+    cell centres; blocked cells are dead nodes so that ``uv_at`` never interpolates across a building); speeds above
+    config.WIND_POTENTIAL_SPEED_CAP * U (corner singularity) are scaled down to that cap.  The adjoint operator
+    samples this field at its own (slab) cell centres, which coincide with lattice nodes of the default grid."""
+    grid = grid if grid is not None else domain_grid()
     blocked = AdvectionDiffusionOperator.blocked_at_cells(obstacles, grid, z)             # (ny, nx)
     uv = potential_flow_uv(blocked, grid.res, U, dir_deg, grid.x_centres, grid.y_centres)
     cap = config.WIND_POTENTIAL_SPEED_CAP * float(U)                                        # corner singularity of the potential flow
@@ -184,20 +200,26 @@ def potential_flow_diagnostics(uv: np.ndarray, blocked: np.ndarray, res: float, 
     wall_x = free & (np.roll(blocked, 1, axis=1) | np.roll(blocked, -1, axis=1))
     wall_y = free & (np.roll(blocked, 1, axis=0) | np.roll(blocked, -1, axis=0))
     e = _unit(dir_deg)
-    col = 0 if e[0] >= 0 else -1
+    if abs(e[0]) >= abs(e[1]):                                               # inflow edge: a column for |u| >= |v|, a row otherwise
+        col = 0 if e[0] >= 0 else -1
+        edge = speed[free[:, col], col]
+    else:
+        row = 0 if e[1] >= 0 else -1
+        edge = speed[row, free[row, :]]
     return {"div_rms": float(np.sqrt(np.mean(div[inner] ** 2))) if inner.any() else 0.0,
             "div_max": float(np.abs(div[inner]).max()) if inner.any() else 0.0,
             "div_scale": float(U / res),
             "wall_normal_median_u": float(np.median(np.abs(u[wall_x]))) if wall_x.any() else 0.0,
             "wall_normal_median_v": float(np.median(np.abs(v[wall_y]))) if wall_y.any() else 0.0,
-            "inflow_edge_mean_speed": float(np.mean(speed[free[:, col], col])) if free[:, col].any() else float("nan"),
+            "inflow_edge_mean_speed": float(np.mean(edge)) if edge.size else float("nan"),
             "speed_mean_free": float(speed[free].mean()), "speed_max_free": float(speed[free].max()),
             "speed_p95_free": float(np.percentile(speed[free], 95)), "n_free": int(free.sum()), "n_blocked": int(blocked.sum())}
 
 
-def build_wind_field(level: str, obstacles: ObstacleMap | None = None, grid: SlabGrid = SlabGrid(),
+def build_wind_field(level: str, obstacles: ObstacleMap | None = None, grid: SlabGrid | None = None,
                      U: float = config.WIND_MEAN_U, dir_deg: float = config.WIND_MEAN_DIR_DEG) -> tuple[WindField, float]:
-    """(WindField, seconds) of a wind-knowledge level: W0 uniform, W1 potential flow (needs obstacles), W2 CFD."""
+    """(WindField, seconds) of a wind-knowledge level: W0 uniform, W1 potential flow on ``grid`` (default: the whole
+    domain; needs obstacles), W2 CFD."""
     t0 = time.perf_counter()
     if level == "W0":
         wf = uniform_wind_field(U, dir_deg)

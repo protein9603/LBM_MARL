@@ -103,3 +103,31 @@ def test_environment_runs_and_records_carry_the_wind_level(level):
     assert rec["wind_level"] == level
     tr = make_train_env(sc, sc.reflected_scene(), 1, truth_mode="F", wind_level=level, max_steps=12, **KW)   # scene option is dropped
     assert tr.scene.wind_level == level
+
+
+def test_enclosed_courtyard_is_calm_and_the_speed_cap_applies(monkeypatch):
+    ny, nx, res = 30, 40, 5.0
+    blocked = np.zeros((ny, nx), bool)
+    blocked[8:20, 12:24] = True                                   # ring with a free courtyard inside
+    blocked[11:17, 15:21] = False
+    x, y = res * (np.arange(nx) + 0.5), -75.0 + res * (np.arange(ny) + 0.5)
+    uv = potential_flow_uv(blocked, res, 1.68, 0.0, x, y)
+    inside = np.zeros_like(blocked); inside[11:17, 15:21] = True
+    assert np.all(uv[inside] == 0.0)                              # pure-Neumann component: calm, no singular solve
+    assert np.hypot(*uv[2, 2]) > 0.5                              # the outer flow still exists
+    om = _obstacles()
+    monkeypatch.setattr(config, "WIND_POTENTIAL_SPEED_CAP", 1.0)
+    wf = potential_flow_field(om, GRID, 1.5, 0.0)
+    speed = np.hypot(wf.uvw[0, :, :, 0], wf.uvw[0, :, :, 1])
+    assert speed.max() <= 1.5 * 1.0 + 1e-5                        # every cell at or below the cap
+
+
+def test_w1_default_lattice_covers_the_whole_domain_and_the_slab_grid():
+    from srcloc_env.field.wind_models import domain_grid
+    g = domain_grid()
+    slab = SlabGrid()
+    assert g.x0 <= config.DOMAIN_X[0] and g.y0 <= config.DOMAIN_Y[0]
+    assert g.x0 + g.nx * g.res >= slab.x0 + slab.nx * slab.res and g.y0 + g.ny * g.res >= slab.y0 + slab.ny * slab.res
+    ix = (slab.x_centres - g.x_centres[0]) / g.res
+    iy = (slab.y_centres - g.y_centres[0]) / g.res
+    assert np.allclose(ix, np.round(ix)) and np.allclose(iy, np.round(iy))     # slab centres are lattice nodes

@@ -187,7 +187,7 @@
 - 문제: PF 전방모델이 상세 CFD 바람장(15 m 층)을 쓰는 것은 "바람장을 안다"는 가정이고 현장에서는 며칠짜리 계산을 할 수 없다. 추정기(전방모델 + 관측의 드론 위치 바람)에 주는 바람 정보를 세 수준으로 두고 같은 파이프라인·같은 평가로 비교한다. 진실 데이터·에피소드 목록·성공 판정·보상·기준 방법 정의는 바뀌지 않는다.
 - W0 기준 바람 1점(U 1.68 m/s, +x) + 전역 가우시안 플룸(σ_v 0.9); W1 기준 바람 1점 + 건물 지도 → 질량 보존 포텐셜 유동(`field/wind_models.py`, 0.2 s) → 기존 adjoint 연산자; W2 CFD 바람 + adjoint(기존, 상한 참고값).
 - 선택: `run_eval --wind-level {W0,W1,W2}`(기본 W2), `train --wind-level`(체크포인트·config.json·env_kw에 저장), `ckpt_eval`은 체크포인트 값을 따름, `PPOPolicy`는 수준 불일치 시 경고(전이 실험 허용). 기록 CSV `wind_level` 열, summary.json `wind_levels`. 기존 기록·체크포인트는 모두 W2로 해석한다.
-- 검증(`scripts/validate_wind_levels.py`, `tests/test_wind_levels.py` 8개): W1 발산 rms 0.011 s⁻¹(U/Δ의 3 %), 거울 대칭 1e-13, 자기 모델 합성 진실 PF 개방 소스 108·111 최종 오차 W0 7/15, W1 6/9, W2 5/10 m(PASS). 한계: 포텐셜 유동은 후류·재순환이 없어 정체 소스 101·102(CFD 역류)·안뜰 106·107·110(W1 정지)을 표현하지 못한다.
+- 검증(`scripts/validate_wind_levels.py`, `tests/test_wind_levels.py` 11개, `tests/test_rl_training.py` 배관 테스트): W1은 드론 영역 전체에서 풀고(원거리 조건이 건물군 상류에 놓임) 발산 rms 0.012 s⁻¹(U/Δ의 3.5 %), 거울 대칭 1e-13, 자기 모델 합성 진실 PF 개방 소스 108·111 최종 오차 W0 7/15, W1 6/9, W2 5/10 m(PASS). 독립 검토(에이전트 3 + 반박 검증)에서 중간 4건·낮음 11건을 받아 모두 반영했다(영역 전체 풀이, 건물 안 수신점 제외, 기록 열 `trained_wind_level`, 단계 로그 메타 `wind_level`, 합치기 시 수준 혼합 금지, 옛 기록 W2 기본값, 안뜰·상한 테스트). 한계: 포텐셜 유동은 후류·재순환이 없어 정체 소스 101·102(CFD 역류)·안뜰 106·107·110(W1 정지)을 표현하지 못한다.
 
 ## 7. 학습 결과 분석 시각화 **[구현됨 D11]** (`scripts/fig_training.py` `make_all`; 출력 `분석그림/icrs15/`, 기본 150 dpi, 최종은 `--dpi 300`, PNG + CSV + 매니페스트)
 

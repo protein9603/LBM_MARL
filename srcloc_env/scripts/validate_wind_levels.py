@@ -57,11 +57,14 @@ def synthetic_pf_run(scene: Scene, source: int, n_steps: int, seed: int = 0, n_p
 
 
 def response_ratio(scene: Scene, ref: Scene, source: int) -> dict:
+    """log10(g_level / g_W2) at +x centreline receptors; receptors inside a building (both adjoint models return the
+    floor there) are reported as 'blocked' instead of a ratio (review D13)."""
     xs, ys = scene.sources_xy[source]
     rec = np.array([[xs + d, ys, config.DRONE_Z] for d in RECEPTORS_M])
+    free = scene.obstacles.is_free(rec[:, :2], config.DRONE_Z, margin=0.0)
     g = scene.model.unit_response(np.array([[xs, ys]]), rec)[0]
     g0 = ref.model.unit_response(np.array([[xs, ys]]), rec)[0]
-    return {f"{int(d)}m": float(np.log10(g[i] / g0[i])) for i, d in enumerate(RECEPTORS_M)}
+    return {f"{int(d)}m": (float(np.log10(g[i] / g0[i])) if free[i] else "blocked") for i, d in enumerate(RECEPTORS_M)}
 
 
 def main(argv: list[str] | None = None) -> dict:
@@ -101,8 +104,10 @@ def main(argv: list[str] | None = None) -> dict:
                 a, b = out["levels"][lv]["wind_at_sources"][s], out["levels"]["W2"]["wind_at_sources"][s]
                 dang = (a["dir_deg"] - b["dir_deg"] + 180.0) % 360.0 - 180.0
                 out["levels"][lv]["wind_vs_W2"][s] = {"speed_ratio": a["speed"] / max(b["speed"], 1e-9), "angle_diff_deg": dang}
-            print(f"[{lv} vs W2] log10 response ratio at +x receptors: " + "; ".join(f"{s}: " + " ".join(f"{k} {v:+.1f}" for k, v in out['levels'][lv]['response_ratio_vs_W2'][s].items()) for s in args.sources), flush=True)
+            print(f"[{lv} vs W2] log10 response ratio at +x receptors: " + "; ".join(f"{s}: " + " ".join(f"{k} {v:+.1f}" if isinstance(v, float) else f"{k} {v}" for k, v in out['levels'][lv]['response_ratio_vs_W2'][s].items()) for s in args.sources), flush=True)
     open_src = [s for s in args.sources if s in OPEN_SOURCES]
+    if not open_src:
+        raise SystemExit(f"--sources must include at least one open source {OPEN_SOURCES} for the synthetic PF pass rule")
     ok = all(lv["pf_synthetic"][s]["final_error_m"] < PF_SYNTH_MAX_ERR_M for lv in out["levels"].values() for s in open_src)
     out["pf_synthetic_pass"] = bool(ok)
     print(f"synthetic PF check (final error < {PF_SYNTH_MAX_ERR_M:.0f} m for every level at the open sources {open_src}; the straight +x flight is not a valid path for stagnant sources): {'PASS' if ok else 'FAIL'}")

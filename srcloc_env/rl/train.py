@@ -124,7 +124,7 @@ def train(a: argparse.Namespace) -> dict[str, Any]:
         if (ck_mode, ck_steps) != (mode, max_steps):
             raise ValueError(f"--resume: {latest} was trained with truth mode {ck_mode} and {ck_steps}-step episodes, this call asks for {mode} / {max_steps}; pass the same --truth-mode / --max-steps")
         if ck.get("env_kw") is not None and dict(ck["env_kw"]) != env_kw:
-            raise ValueError(f"--resume: the checkpoint was trained with environment options {ck['env_kw']} but this call has {env_kw}; pass the same --sources/--start-*/--obs-version/--shaping options")
+            raise ValueError(f"--resume: the checkpoint was trained with environment options {ck['env_kw']} but this call has {env_kw}; pass the same --sources/--start-*/--obs-version/--shaping/--wind-level options")
         it, steps, ep_idx = int(ck["iteration"]), int(ck["env_steps"]), list(ck["episode_idx"])
         init_note = f"resumed from {latest} at iteration {it}"
     elif a.init_from:

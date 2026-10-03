@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import csv
+import json
 
 import numpy as np
 import pytest
@@ -317,3 +318,21 @@ def test_detection_flag_drives_the_v2_recency_feature_per_drone(scene, monkeypat
     for k in range(1, 4):
         obs, *_ = env.step(np.array([8, 8]))
         assert obs[0, 45] == pytest.approx(k / config.ENV_V2_DET_NORM_STEPS) and obs[1, 45] == 1.0
+
+
+def test_wind_level_is_trained_saved_and_checked_at_evaluation(scene, tmp_path, monkeypatch):
+    _run(["--run-name", "w0", "--procs", "0", "--n-steps", "32", "--out-root", str(tmp_path), "--no-ckpt-eval", "--n-drones", "2", "--total-steps", "32",
+          "--obs-version", "v2", "--wind-level", "W0"], scene, monkeypatch)
+    assert _FakePool.last_env_kw["wind_level"] == "W0"                                                       # reaches the rollout workers (load_scene)
+    ck = torch.load(tmp_path / "w0" / "final.pt", map_location="cpu", weights_only=False)
+    assert ck["wind_level"] == "W0" and ck["env_kw"]["wind_level"] == "W0"
+    cfg = json.loads((tmp_path / "w0" / "config.json").read_text(encoding="utf-8"))
+    assert cfg["wind_level"] == "W0"
+    spec = EpisodeSpec(episode_id=0, seed=7, source=1, frame=450, scale=1.0)
+    env_w2 = make_train_env(scene, scene.reflected_scene(), 2, obs_version="v2", **{**KW, "terminate_on_success": False})
+    with pytest.warns(UserWarning, match="wind_level"):                                                        # W0 policy evaluated on the W2 scene
+        rec, _ = run_episode(env_w2, PPOPolicy(tmp_path / "w0" / "final.pt"), spec)
+    assert rec["wind_level"] == "W2" and rec["trained_wind_level"] == "W0"
+    with pytest.raises(ValueError, match="wind-level"):                                                        # resume without the flag is refused
+        _run(["--run-name", "w0", "--procs", "0", "--n-steps", "32", "--out-root", str(tmp_path), "--no-ckpt-eval", "--n-drones", "2", "--total-steps", "64",
+              "--obs-version", "v2", "--resume"], scene, monkeypatch)

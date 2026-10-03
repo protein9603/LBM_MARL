@@ -52,7 +52,7 @@ def evaluate_checkpoint(ckpt: str | Path, out_csv: str | Path, n_per_source: int
         recs.append(rec)
     Path(out_csv).parent.mkdir(parents=True, exist_ok=True)
     write_records(Path(out_csv), recs)
-    out = {"n": len(recs), "wall_s": time.perf_counter() - t0, "n_drones": n_drones, "env_steps": pol.meta.get("env_steps"), "mode": mode, "max_steps": max_steps, "obs_version": obs_version}
+    out = {"n": len(recs), "wall_s": time.perf_counter() - t0, "n_drones": n_drones, "env_steps": pol.meta.get("env_steps"), "mode": mode, "max_steps": max_steps, "obs_version": obs_version, "wind_level": wind_level}
     for g in ("train", "holdout"):
         sel = [r for r in recs if r["group"] == g]
         out[f"success_{g}"] = float(np.mean([r["success"] for r in sel])) if sel else float("nan")

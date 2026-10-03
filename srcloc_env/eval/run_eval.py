@@ -32,7 +32,7 @@ from srcloc_env.env.source_env import Scene, SourceLocEnv, default_max_steps, lo
 from srcloc_env.eval.episodes import EpisodeSpec, load_episode_list, make_episode_list, save_episode_list
 from srcloc_env.eval.metrics import aggregate, paired_differences, table2_markdown
 
-RECORD_FIELDS = ["method", "n_drones", "episode_id", "seed", "source", "frame", "scale", "mode", "wind_level", "start_type", "success", "steps",
+RECORD_FIELDS = ["method", "n_drones", "episode_id", "seed", "source", "frame", "scale", "mode", "wind_level", "trained_wind_level", "start_type", "success", "steps",
                  "success_strict", "steps_strict", "min_error_m",
                  "final_error_m", "first_detection_step", "declared_step", "declared_error_m", "path_length_m", "n_masked",
                  "entropy_final", "top_sigma_final_m", "wall_s", "step_ms_median", "tie_tol", "tie_frac", "all_tied_frac", "calib_2sigma_frac"]
@@ -113,7 +113,8 @@ def run_episode(env: SourceLocEnv, policy, spec: EpisodeSpec, log_steps: bool = 
             log["entropy"].append(env.h_prev); log["top_sigma"].append(g.top_sigma()); log["map_error"].append(float(info["map_error_m"]))
             log["frame"].append(int(info["frame"])); log["reward"].append(float(r)); log["calib_inside"].append(inside[-1])
     rec = {"method": policy.name, "n_drones": n, "episode_id": spec.episode_id, "seed": spec.seed, "source": spec.source,
-           "frame": spec.frame, "scale": spec.scale, "mode": env.truth_mode, "wind_level": env.scene.wind_level, "start_type": start_type, "success": first_ok is not None,
+           "frame": spec.frame, "scale": spec.scale, "mode": env.truth_mode, "wind_level": env.scene.wind_level,
+           "trained_wind_level": str(getattr(policy, "meta", {}).get("wind_level", "")) if hasattr(policy, "meta") else "", "start_type": start_type, "success": first_ok is not None,
            "steps": int(first_ok if first_ok is not None else info["t"]), "success_strict": first_strict is not None,
            "steps_strict": int(first_strict if first_strict is not None else info["t"]), "min_error_m": min_err,
            "final_error_m": float(info["map_error_m"]), "first_detection_step": first_det, "declared_step": declared_step,
@@ -128,7 +129,8 @@ def run_episode(env: SourceLocEnv, policy, spec: EpisodeSpec, log_steps: bool = 
         log["truth_xy"] = np.asarray(info["truth_xy"])
         log["start_xy"] = start_xy
         log["meta"] = {"source": spec.source, "frame": spec.frame, "scale": spec.scale, "seed": spec.seed, "success": first_ok is not None,
-                       "method": policy.name, "n_drones": n, "start_type": start_type, "mode": env.truth_mode, "max_steps": int(env.max_steps)}
+                       "method": policy.name, "n_drones": n, "start_type": start_type, "mode": env.truth_mode, "max_steps": int(env.max_steps),
+                       "wind_level": env.scene.wind_level}
     return rec, log
 
 
@@ -199,6 +201,8 @@ def _cast(row: dict) -> dict:
     out["declared_error_m"] = float(row["declared_error_m"]) if row.get("declared_error_m") not in (None, "", "None") else None
     for k in _BOOL:
         out[k] = str(row[k]) == "True"
+    out["wind_level"] = str(row.get("wind_level") or config.WIND_LEVEL_DEFAULT)          # records before D13 are W2
+    out["trained_wind_level"] = str(row.get("trained_wind_level") or "")
     return out
 
 
@@ -298,6 +302,13 @@ def main(argv: list[str] | None = None) -> dict:
         if len(modes) > 1 or (args.mode and modes and args.mode != modes[0]):
             raise SystemExit(f"--summarize-only: records in {out_dir} have truth mode(s) {modes} but --mode is {args.mode}; use one --tag per truth mode")
         args.mode = modes[0] if modes else (args.mode or "F")                        # horizon and labels follow the records, not the CLI default
+        by_key: dict[tuple[str, int], set[str]] = {}
+        for r in recs:
+            by_key.setdefault((r["method"], int(r["n_drones"])), set()).add(r["wind_level"])
+        mixed = {k: sorted(v) for k, v in by_key.items() if len(v) > 1}
+        if mixed:
+            raise SystemExit(f"--summarize-only: the same method / drone count holds records of several wind levels {mixed}; "
+                             "rename when merging (--merge-from TAG:method:method_W0) so that every table row is one estimator")
         methods = []
         for r in recs:
             if r["method"] not in methods:
