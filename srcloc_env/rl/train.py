@@ -91,6 +91,8 @@ def train(a: argparse.Namespace) -> dict[str, Any]:
     env_kw: dict[str, Any] = {"truth_mode": mode, "max_steps": max_steps}
     if obs_version != "v1":
         env_kw["obs_version"] = obs_version
+    if str(a.wind_level) != config.WIND_LEVEL_DEFAULT:
+        env_kw["wind_level"] = str(a.wind_level)
     if a.sources:
         env_kw["sources"] = tuple(int(x) for x in a.sources)
     if a.start_plume_frac is not None:
@@ -131,6 +133,8 @@ def train(a: argparse.Namespace) -> dict[str, Any]:
         if str(ck0.get("obs_version", "v1")) != obs_version:
             raise ValueError(f"--init-from {a.init_from} was trained with observation {ck0.get('obs_version', 'v1')}, this run uses {obs_version}: the first-layer inputs mean different things")
         net = net0.widened(obs_dim)
+        if str(ck0.get("wind_level", config.WIND_LEVEL_DEFAULT)) != str(a.wind_level):
+            print(f"[train] NOTE: --init-from {a.init_from} was trained with wind level {ck0.get('wind_level', config.WIND_LEVEL_DEFAULT)}, this run uses {a.wind_level} (transfer across wind-knowledge levels)", flush=True)
         ck0_mode = str(ck0.get("truth_mode", "F"))
         if ck0_mode != mode:
             print(f"[train] WARNING: --init-from checkpoint was trained in truth mode {ck0_mode}, this run uses {mode}", flush=True)
@@ -153,10 +157,10 @@ def train(a: argparse.Namespace) -> dict[str, Any]:
             "n_drones": n, "init": init_note, "git_commit": _git_commit(), "torch": torch.__version__,
             "train_sources": list(env_kw.get("sources", config.TRAIN_SOURCES)), "reflect_prob": config.ENV_REFLECT_PROB_TRAIN,
             "success_sigma_m": config.ENV_SUCCESS_SIGMA_M, "success_error_m": config.ENV_SUCCESS_ERROR_M, "obs_version": obs_version, "truth_mode": mode, "max_steps": max_steps,
-            "env_kw": env_kw}
+            "wind_level": str(a.wind_level), "env_kw": env_kw}
     cfg_name = "config.json" if not resume else f"config_resume_{it}.json"
     (run_dir / cfg_name).write_text(json.dumps(info, indent=2, ensure_ascii=False), encoding="utf-8")
-    print(f"[train] {a.run_name}: {n} drone(s), truth {mode}, {max_steps}-step episodes, obs {obs_dim}, {a.procs} worker(s), {cfg.n_steps} steps each, total {a.total_steps} team steps; {init_note}", flush=True)
+    print(f"[train] {a.run_name}: {n} drone(s), truth {mode}, wind {a.wind_level}, {max_steps}-step episodes, obs {obs_dim}, {a.procs} worker(s), {cfg.n_steps} steps each, total {a.total_steps} team steps; {init_note}", flush=True)
 
     pool = RolloutPool(n, int(a.run_seed), int(a.procs), episode_idx=ep_idx, env_kw=env_kw)
     ma: collections.deque = collections.deque(maxlen=int(a.ma_window))
@@ -169,7 +173,7 @@ def train(a: argparse.Namespace) -> dict[str, Any]:
 
     def checkpoint(final: bool = False) -> None:
         extra = {"iteration": it, "env_steps": steps, "episode_idx": list(ep_idx), "n_drones": n, "run_name": a.run_name, "ppo": cfg.to_dict(),
-                 "truth_mode": mode, "max_steps": max_steps, "env_kw": env_kw, "obs_version": obs_version}
+                 "truth_mode": mode, "max_steps": max_steps, "env_kw": env_kw, "obs_version": obs_version, "wind_level": str(a.wind_level)}
         path = run_dir / ("final.pt" if final else f"ckpt_{steps:08d}.pt")
         save_checkpoint(path, learner, extra)
         save_checkpoint(latest, learner, extra)
@@ -252,6 +256,7 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--shaping-weight", type=float, default=1.0)
     ap.add_argument("--shaping-cap-m", type=float, default=400.0)
     ap.add_argument("--fail-cap-m", type=float, default=None, help="cap of the terminal failure error term in m (default 300; larger removes the saturation)")
+    ap.add_argument("--wind-level", choices=list(config.WIND_LEVELS), default=config.WIND_LEVEL_DEFAULT, help="wind knowledge of the estimator (D13): W0 mean wind + Gaussian plume, W1 mean wind + building map, W2 CFD wind (default)")
     ap.add_argument("--sources", type=int, nargs="*", default=None, help="training sources (default config.TRAIN_SOURCES); the evaluation lists are unchanged")
     ap.add_argument("--start-plume-frac", type=float, default=None, help="probability that a drone starts inside the detectable plume region (default config.ENV_START_PLUME_FRAC)")
     ap.add_argument("--start-min-dist", type=float, default=None, help="minimum start distance from the source [m] (default 200)")

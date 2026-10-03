@@ -47,6 +47,8 @@ References: R3 (Poisson counts), R5 (RB-PF), R7 (GMM belief summary / policy inp
 """
 from __future__ import annotations
 
+import dataclasses
+
 import time
 from dataclasses import dataclass
 from typing import Any, Protocol, Sequence
@@ -59,6 +61,8 @@ from srcloc_env import config
 from srcloc_env.env.drone import ACTION_STAY, DroneKinematics, ObstacleMap, heading_unit_vectors
 from srcloc_env.field.concentration_field import LdmSlabBackend
 from srcloc_env.field.wind import WindField
+from srcloc_env.field.wind_models import build_wind_field
+from srcloc_env.pf.forward_model import ForwardParams, GaussianPlume
 from srcloc_env.pf.gmm_summary import GmmSummary, summarise_pf
 from srcloc_env.pf.lbm_adjoint import AdjointParams, AdvectionDiffusionOperator, LbmAdjointModel
 from srcloc_env.pf.particle_filter import RBPF
@@ -86,33 +90,52 @@ class Scene:
     wind: WindField
     obstacles: ObstacleMap
     backend: TruthBackend
-    model: LbmAdjointModel
+    model: LbmAdjointModel | GaussianPlume
     sources_xy: dict[int, tuple[float, float]]
     reflected: bool = False
     grid: SlabGrid = SlabGrid()
     params: AdjointParams = AdjointParams(K=config.ADJ_K_CHOSEN, lam=config.ADJ_LAMBDA_CHOSEN)
     seconds_build: float = 0.0
+    wind_level: str = config.WIND_LEVEL_DEFAULT          # W0 / W1 / W2 (field/wind_models.py, plan D13)
+    plume_params: ForwardParams | None = None            # W0 only: the global Gaussian plume (U / direction follow ``wind``)
 
     @classmethod
     def build(cls, wind: WindField, obstacles: ObstacleMap, backend: TruthBackend,
               sources_xy: dict[int, tuple[float, float]] | None = None, params: AdjointParams | None = None,
-              grid: SlabGrid = SlabGrid(), reflected: bool = False, max_cached: int = config.ADJ_MAX_CACHED) -> "Scene":
-        """Assemble + factorise the adjoint operator on the given wind / obstacles and wrap it in LbmAdjointModel."""
+              grid: SlabGrid = SlabGrid(), reflected: bool = False, max_cached: int = config.ADJ_MAX_CACHED,
+              wind_level: str = config.WIND_LEVEL_DEFAULT, plume_params: ForwardParams | None = None) -> "Scene":
+        """Forward model of the wind-knowledge level (config.WIND_LEVEL_FORWARD): 'adjoint' (W1, W2) assembles and
+        factorises the advection-diffusion operator on the given wind / obstacles (LbmAdjointModel); 'plume' (W0) is
+        the global Gaussian plume whose speed and direction are read from the (uniform) wind field, so that a
+        mirrored wind gives a mirrored plume."""
         t0 = time.perf_counter()
+        if wind_level not in config.WIND_LEVELS:
+            raise ValueError(f"wind_level must be one of {config.WIND_LEVELS}, got {wind_level!r}")
         params = params if params is not None else AdjointParams(K=config.ADJ_K_CHOSEN, lam=config.ADJ_LAMBDA_CHOSEN)
-        op = AdvectionDiffusionOperator.from_data(params, wind, obstacles, grid=grid).factorize()
-        model = LbmAdjointModel(op, max_cached=max_cached)
+        if config.WIND_LEVEL_FORWARD[wind_level] == "plume":
+            centre = np.array([[0.5 * (wind.x[0] + wind.x[-1]), 0.5 * (wind.y[0] + wind.y[-1])]])
+            u, v = wind.uv_at(centre, params.z)[0]
+            U, direction = float(np.hypot(u, v)), float(np.degrees(np.arctan2(v, u)))
+            base = plume_params if plume_params is not None else ForwardParams(U=max(U, config.FWD_U_MIN), sigma_v=config.WIND_PLUME_SIGMA_V)
+            plume_params = dataclasses.replace(base, U=max(U, config.FWD_U_MIN), wind_dir_deg=direction)
+            model: LbmAdjointModel | GaussianPlume = GaussianPlume(plume_params, wind_mode="global")
+        else:
+            op = AdvectionDiffusionOperator.from_data(params, wind, obstacles, grid=grid).factorize()
+            model = LbmAdjointModel(op, max_cached=max_cached)
         src = dict(sources_xy if sources_xy is not None else config.SOURCES_XY)
         return cls(wind, obstacles, backend, model, {int(k): (float(v[0]), float(v[1])) for k, v in src.items()},
-                   reflected, grid, params, time.perf_counter() - t0)
+                   reflected, grid, params, time.perf_counter() - t0, wind_level, plume_params)
 
     @classmethod
     def load(cls, params: AdjointParams | None = None, backend: TruthBackend | None = None,
-             max_cached_frames: int = config.FIELD_MAX_CACHED_FRAMES) -> "Scene":
-        """The real scene: WindField.load(), ObstacleMap.load(), LdmSlabBackend(cache) and the chosen adjoint
-        combination (config.ADJ_K_CHOSEN / ADJ_LAMBDA_CHOSEN; D8-1)."""
+             max_cached_frames: int = config.FIELD_MAX_CACHED_FRAMES, wind_level: str = config.WIND_LEVEL_DEFAULT) -> "Scene":
+        """The real scene: the wind of the requested knowledge level (W2 WindField.load(), W1 potential flow on the
+        building map, W0 uniform; field/wind_models.py), ObstacleMap.load(), LdmSlabBackend(cache) and the chosen
+        adjoint combination (config.ADJ_K_CHOSEN / ADJ_LAMBDA_CHOSEN; D8-1).  The truth never depends on the wind."""
         be = backend if backend is not None else LdmSlabBackend(max_cached_frames=max_cached_frames)
-        return cls.build(WindField.load(), ObstacleMap.load(), be, config.SOURCES_XY, params)
+        om = ObstacleMap.load()
+        wf, _ = build_wind_field(wind_level, om)
+        return cls.build(wf, om, be, config.SOURCES_XY, params, wind_level=wind_level)
 
     def reflected_scene(self) -> "Scene":
         """The y-mirrored scene (plan 4.5 학습 시 y 반사): wind (y -> -y, v -> -v, building arrays mirrored),
@@ -132,7 +155,8 @@ class Scene:
         g = self.grid                                                  # adjoint grid mirrored too (review D8-3):
         grid_r = SlabGrid(g.x0, -(g.y0 + g.ny * g.res), g.nx, g.ny, g.res)   # cell centres -> -(original centres), involutive
         return Scene.build(wind_r, obs_r, self.backend, src_r, self.params, grid_r, reflected=not self.reflected,
-                           max_cached=self.model.max_cached if hasattr(self.model, "max_cached") else config.ADJ_MAX_CACHED)
+                           max_cached=self.model.max_cached if hasattr(self.model, "max_cached") else config.ADJ_MAX_CACHED,
+                           wind_level=self.wind_level, plume_params=self.plume_params)
 
 
 # ------------------------------------------------------------------------------------------- environment
@@ -140,12 +164,13 @@ def default_max_steps(mode: str) -> int:
     return config.T2_MAX_STEPS if mode == "T2" else config.MAX_EPISODE_STEPS
 
 
-def load_scene(mode: str) -> Scene:
-    """The real scene; Mode T2 reads its truth from the memory-mapped slab stack (D11), Mode F from the per-frame cache."""
+def load_scene(mode: str, wind_level: str = config.WIND_LEVEL_DEFAULT) -> Scene:
+    """The real scene; Mode T2 reads its truth from the memory-mapped slab stack (D11), Mode F from the per-frame
+    cache; ``wind_level`` selects the estimator's wind knowledge (W0 / W1 / W2, plan D13)."""
     if mode == "T2":
         from srcloc_env.field.slab_stack import StackedSlabBackend
-        return Scene.load(backend=StackedSlabBackend())
-    return Scene.load()
+        return Scene.load(backend=StackedSlabBackend(), wind_level=wind_level)
+    return Scene.load(wind_level=wind_level)
 
 
 class SourceLocEnv(gym.Env):

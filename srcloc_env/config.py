@@ -671,3 +671,12 @@ def agent_obs_dim(version: str, n_drones: int) -> int:
     return env_obs_dim(version) + ENV_TEAMMATE_DIM * (int(n_drones) - 1)
 PPO_VALUE_NORM_BETA = 0.9                 # debiased EMA factor of the return statistics, applied once per PPO iteration (ValueNorm of Yu et al. 2022) [D12]
 ENV_PRIV_DIM = 5                          # privileged critic features per drone: (truth - drone)/1000 (2), log10(1 + distance/50 m), log10(sensor scale), (frame - 400)/200 [D12]
+
+# Wind-knowledge levels of the ESTIMATOR (plan D13, professor's remark 2026-10-03; field/wind_models.py, env/source_env.Scene)
+WIND_LEVELS = ("W0", "W1", "W2")        # W0 mean wind + global Gaussian plume; W1 mean wind + building map (potential flow) + adjoint; W2 CFD wind + adjoint (reference)
+WIND_LEVEL_DEFAULT = "W2"               # every existing run/checkpoint/record without a wind_level entry is W2
+WIND_LEVEL_FORWARD = {"W0": "plume", "W1": "adjoint", "W2": "adjoint"}   # forward model per level (Scene.build)
+WIND_MEAN_U = T1_4_ANALYTIC_U           # 1.68 m/s: the ONE reference wind speed given to W0/W1 (T1-3 chosen in-canopy 10-15 m band mean) [결정 D13]
+WIND_MEAN_DIR_DEG = 0.0                 # reference wind direction, deg CCW from +x (the domain inflow is +x, inflow column v = 0) [측정 3.3]
+WIND_PLUME_SIGMA_V = T1_4_ANALYTIC_SIGMA_V   # 0.9 m/s: lateral turbulence intensity of the W0 plume (T1-3 chosen) [결정 D13]
+WIND_POTENTIAL_SPEED_CAP = 2.5          # W1: potential flow is singular at building corners; cell speeds above 2.5 U are scaled down to 2.5 U (a few corner cells) [결정 D13]

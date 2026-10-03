@@ -80,3 +80,6 @@ Keats, Yee, Lien(2007, R17)이 도시 CFD 유동장에서 정확히 이 방식�
 | D8-1 K 선택의 PF 영향(T1-4, 필터 B, NB r 1, 고정 lawnmower) | 개방 소스 중앙값 K 8 48.5 / K 16 47.4 / K 32 54.1 m; 102 성공률 40 → 80 %; K 32는 108이 163 m로 붕괴(플룸이 과도하게 넓어져 먼 모드가 경쟁) → 형상 잔차 개선이 고정 경로 PF 정확도로 바로 이어지지는 않음(정확도 상한은 경로·클럼프가 지배, D7-4 결론과 일치) |
 
 수식·코드 대응: `AdvectionDiffusionOperator._assemble`(유한체적), `solve_adjoint`(Aᵀψ = e_p, SuperLU trans='T'), `LbmAdjointModel.unit_response`(수신 셀 LRU + 가설 위치 이중선형 보간).
+
+## 10. W1: 평균 바람 + 건물 지도만으로 만든 바람장 (D13, 2026-10-03)
+같은 연산자(`AdvectionDiffusionOperator`, K 16·λ 0.005)에 CFD 바람 대신 `field/wind_models.potential_flow_field`의 2-D 포텐셜 유동을 넣는다: 자유 셀에서 ∇²φ = 0, 건물 면 무투과, 바깥 경계 원거리 φ = U(x cos α + y sin α), 속도 ∇φ(중심/한쪽 차분), 둘러싸인 안뜰 성분은 정지, 모서리 과속은 2.5 U 상한. 질량 보존·건물 우회만 있고 후류·재순환은 없다(진단 바람 모델 계열 R35~R38의 가장 단순한 형태). 검증·한계는 `docs/wind_knowledge_levels.md` 3장.
