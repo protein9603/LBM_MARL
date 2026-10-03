@@ -130,13 +130,13 @@ def run_episode(env: SourceLocEnv, policy, spec: EpisodeSpec, log_steps: bool = 
         log["start_xy"] = start_xy
         log["meta"] = {"source": spec.source, "frame": spec.frame, "scale": spec.scale, "seed": spec.seed, "success": first_ok is not None,
                        "method": policy.name, "n_drones": n, "start_type": start_type, "mode": env.truth_mode, "max_steps": int(env.max_steps),
-                       "wind_level": env.scene.wind_level}
+                       "wind_level": env.scene.wind_level, "wind_u": float(env.scene.wind_u), "wind_dir_deg": float(env.scene.wind_dir_deg)}
     return rec, log
 
 
 # ------------------------------------------------------------------------------------------ workers
-_SCENES: dict[tuple[str, str], Scene] = {}                  # (truth mode, wind level) -> Scene
-_ENVS: dict[tuple[int, str, int, str, str], SourceLocEnv] = {}
+_SCENES: dict[tuple, Scene] = {}                            # (truth mode, wind level, wind_u, wind_dir_deg) -> Scene
+_ENVS: dict[tuple, SourceLocEnv] = {}                        # (n_drones, mode, max_steps, obs_version, wind level, wind_u, wind_dir_deg)
 _CKPT_OBS: dict[str, str] = {}
 
 
@@ -253,7 +253,7 @@ def build_summary(out_dir: Path, recs: list[dict], tag: str, mode: str, total_s:
     timing = {label: {"step_ms_median": float(np.median([r["step_ms_median"] for r in rs])),
                       "episode_wall_s_median": float(np.median([r["wall_s"] for r in rs]))} for label, rs in by_cfg.items()}
     table = table2_markdown(agg)
-    summary = {"created": time.strftime("%Y-%m-%d %H:%M:%S"), "tag": tag, "mode": mode, "wind_levels": sorted({str(r.get("wind_level") or config.WIND_LEVEL_DEFAULT) for r in recs}), "wind_u": sorted({float(r.get("wind_u") or config.WIND_MEAN_U) for r in recs}), "wind_dir_deg": sorted({float(r.get("wind_dir_deg") or 0.0) for r in recs}), "max_steps": max_steps, "methods": methods,
+    summary = {"created": time.strftime("%Y-%m-%d %H:%M:%S"), "tag": tag, "mode": mode, "wind_levels": sorted({str(r.get("wind_level") or config.WIND_LEVEL_DEFAULT) for r in recs}), "wind_u": sorted({float(r["wind_u"]) if r.get("wind_u") not in (None, "") else float(config.WIND_MEAN_U) for r in recs}), "wind_dir_deg": sorted({float(r["wind_dir_deg"]) if r.get("wind_dir_deg") not in (None, "") else float(config.WIND_MEAN_DIR_DEG) for r in recs}), "max_steps": max_steps, "methods": methods,
                "n_drones": sorted({r["n_drones"] for r in recs}), "n_episodes": len({r["episode_id"] for r in recs}),
                "sources": sorted({r["source"] for r in recs}),
                "aggregates": agg, "aggregates_by_start_type": agg_by_start, "paired_vs_first_method": paired, "timing": timing, "table2_markdown": table,
@@ -320,6 +320,8 @@ def main(argv: list[str] | None = None) -> dict:
                 methods.append(r["method"])
         return build_summary(out_dir, recs, args.tag, args.mode, 0.0, 0, methods, args.max_steps)
     args.mode = args.mode or "F"
+    if args.wind_level == "W2" and (args.wind_u is not None or args.wind_dir is not None):
+        raise SystemExit("--wind-u / --wind-dir only apply to the W0 / W1 estimators; W2 uses the CFD wind field (the override would be recorded but never used)")
     if args.episodes is not None:
         specs = load_episode_list(args.episodes)
         bad = sorted({sp.mode for sp in specs if sp.mode != args.mode})

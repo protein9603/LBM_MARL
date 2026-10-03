@@ -281,7 +281,7 @@ def record_from_step_log(path: Path, method: str, n_drones: int, episode_id: int
            "frame": int(meta.get("frame", row.get("frame", -1))), "scale": float(meta.get("scale", row.get("scale", float("nan")))),
            "mode": str(meta.get("mode", row.get("mode", default_mode))), "start_type": str(meta.get("start_type", "")),
            "wind_level": str(meta.get("wind_level", row.get("wind_level", config.WIND_LEVEL_DEFAULT))), "trained_wind_level": str(row.get("trained_wind_level", "")),
-           "wind_u": float(row.get("wind_u", config.WIND_MEAN_U)), "wind_dir_deg": float(row.get("wind_dir_deg", config.WIND_MEAN_DIR_DEG)),
+           "wind_u": float(meta.get("wind_u", row.get("wind_u", config.WIND_MEAN_U))), "wind_dir_deg": float(meta.get("wind_dir_deg", row.get("wind_dir_deg", config.WIND_MEAN_DIR_DEG))),
            "success": bool(ok.any()), "steps": int(np.argmax(ok)) + 1 if ok.any() else T,
            "success_strict": bool(strict.any()), "steps_strict": int(np.argmax(strict)) + 1 if strict.any() else T,
            "min_error_m": float(np.min(err)), "final_error_m": float(err[-1]),

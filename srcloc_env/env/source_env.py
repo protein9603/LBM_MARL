@@ -122,12 +122,13 @@ class Scene:
             base = plume_params if plume_params is not None else ForwardParams(U=max(U, config.FWD_U_MIN), sigma_v=config.WIND_PLUME_SIGMA_V)
             plume_params = dataclasses.replace(base, U=max(U, config.FWD_U_MIN), wind_dir_deg=direction)
             model: LbmAdjointModel | GaussianPlume = GaussianPlume(plume_params, wind_mode="global")
+            wind_u, wind_dir_deg = plume_params.U, plume_params.wind_dir_deg          # record what the plume actually uses (review D14)
         else:
             op = AdvectionDiffusionOperator.from_data(params, wind, obstacles, grid=grid).factorize()
             model = LbmAdjointModel(op, max_cached=max_cached)
         src = dict(sources_xy if sources_xy is not None else config.SOURCES_XY)
         return cls(wind, obstacles, backend, model, {int(k): (float(v[0]), float(v[1])) for k, v in src.items()},
-                   reflected, grid, params, time.perf_counter() - t0, wind_level, plume_params, float(wind_u), float(wind_dir_deg))
+                   reflected, grid, params, time.perf_counter() - t0, wind_level, plume_params, float(wind_u), float(wind_dir_deg) + 0.0)
 
     @classmethod
     def load(cls, params: AdjointParams | None = None, backend: TruthBackend | None = None,
