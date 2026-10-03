@@ -122,7 +122,7 @@ class Scene:
             base = plume_params if plume_params is not None else ForwardParams(U=max(U, config.FWD_U_MIN), sigma_v=config.WIND_PLUME_SIGMA_V)
             plume_params = dataclasses.replace(base, U=max(U, config.FWD_U_MIN), wind_dir_deg=direction)
             model: LbmAdjointModel | GaussianPlume = GaussianPlume(plume_params, wind_mode="global")
-            wind_u, wind_dir_deg = plume_params.U, plume_params.wind_dir_deg          # record what the plume actually uses (review D14)
+            wind_u, wind_dir_deg = round(float(plume_params.U), 6), round(float(plume_params.wind_dir_deg), 6)   # what the plume uses, without float32 noise (review D14)
         else:
             op = AdvectionDiffusionOperator.from_data(params, wind, obstacles, grid=grid).factorize()
             model = LbmAdjointModel(op, max_cached=max_cached)
