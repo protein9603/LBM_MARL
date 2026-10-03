@@ -79,7 +79,10 @@ def draw(rows: list[dict], groups: list[str], n_drones: int, out: Path, dpi: int
                 ax.text(x, 100 * r["ci_hi"] + 1.5, f"{100 * r['success']:.0f}", ha="center", va="bottom", fontsize=7, color="#0b0b0b", zorder=5)
         ax.set_xticks(range(len(METHODS)))
         ax.set_xticklabels([label for _, label in METHODS], fontsize=8.5)
-        ax.set_title(GROUP_LABEL.get(g, g), fontsize=10)
+        n_base = next((r["n"] for r in rows if r["group"] == g and r["method"] != "ppo"), None)
+        n_ppo = next((r["n"] for r in rows if r["group"] == g and r["method"] == "ppo"), None)
+        title = GROUP_LABEL.get(g, g).split(" (")[0] + (f" (n = {n_base}" if n_base else "") + (f"; PPO {n_ppo} = 3 seeds" if n_ppo else "") + (")" if n_base else "")
+        ax.set_title(title, fontsize=10)
         ax.yaxis.grid(True, color="#e6e5e0", linewidth=0.8, zorder=0)
         ax.set_axisbelow(True)
         for s in ("top", "right"):
