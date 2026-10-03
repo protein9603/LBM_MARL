@@ -26,7 +26,7 @@ LEVELS = ("W0", "W1", "W2")
 LEVEL_LABEL = {"W0": "W0: mean wind + Gaussian plume", "W1": "W1: mean wind + building map", "W2": "W2: CFD wind field"}
 LEVEL_COLOR = {"W0": "#2a78d6", "W1": "#eb6834", "W2": "#1baf7a"}        # categorical slots 1-3 of the reference palette (validated)
 METHODS = (("random", "random"), ("lawnmower", "lawnmower"), ("greedy_map", "greedy-MAP"), ("gmm_infotaxis", "Infotaxis"),
-           ("ppo", "PPO (ours," + chr(10) + "3 seeds pooled)"), ("oracle_loiter", "oracle" + chr(10) + "(knows source)"))
+           ("ppo", "PPO (ours)" + chr(10) + "3 seeds pooled"), ("oracle_loiter", "oracle" + chr(10) + "(knows source)"))
 GROUP_LABEL = {"all_observable": "12 observable sources (n = 120; PPO 3 seeds, 360)", "holdout": "3 held-out sources (n = 30; PPO 90)", "train": "9 training sources (n = 90)",
                "train_open": "4 open training sources (n = 40)"}
 
@@ -61,7 +61,7 @@ def collect(levels: dict[str, str], ppo: dict[str, list[tuple[str, str]]], n_dro
 
 
 def draw(rows: list[dict], groups: list[str], n_drones: int, out: Path, dpi: int) -> None:
-    fig, axes = plt.subplots(1, len(groups), figsize=(6.0 * len(groups) + 0.8, 4.6), constrained_layout=True, sharey=True)
+    fig, axes = plt.subplots(1, len(groups), figsize=(6.6 * len(groups) + 0.8, 4.6), constrained_layout=True, sharey=True)
     axes = np.atleast_1d(axes)
     levels = [lv for lv in LEVELS if any(r["level"] == lv for r in rows)]
     width = 0.8 / max(len(levels), 1)
