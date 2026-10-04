@@ -131,3 +131,20 @@ def test_w1_default_lattice_covers_the_whole_domain_and_the_slab_grid():
     ix = (slab.x_centres - g.x_centres[0]) / g.res
     iy = (slab.y_centres - g.y_centres[0]) / g.res
     assert np.allclose(ix, np.round(ix)) and np.allclose(iy, np.round(iy))     # slab centres are lattice nodes
+
+
+def test_observation_wind_can_be_uniform_while_the_estimator_keeps_the_potential_flow():
+    om = _obstacles()
+    wf = potential_flow_field(om, GRID, 1.5, 0.0)
+    sc = Scene.build(wf, om, SyntheticBackend(), SOURCES, PARAMS, GRID, wind_level="W1", wind_u=1.5, wind_dir_deg=0.0, obs_wind="uniform")
+    assert isinstance(sc.model, LbmAdjointModel) and sc.obs_wind == "uniform"
+    pts = np.array([[20.0, -50.0], [150.0, 40.0]])
+    assert np.allclose(sc.observation_wind().uv_at(pts, config.DRONE_Z), [[1.5, 0.0], [1.5, 0.0]])    # constant for the policy
+    assert not np.allclose(sc.wind.uv_at(pts, config.DRONE_Z), [[1.5, 0.0], [1.5, 0.0]])                # the estimator still sees the potential flow
+    r = sc.reflected_scene()
+    assert r.obs_wind == "uniform" and np.allclose(r.observation_wind().uv_at(pts, config.DRONE_Z), [[1.5, 0.0], [1.5, 0.0]])
+    env = SourceLocEnv(sc, truth_mode="F", reflect_prob=0.0, terminate_on_success=False, max_steps=6, **KW)
+    obs, info = env.reset(seed=1)
+    assert np.all(np.isfinite(obs))
+    with pytest.raises(ValueError):
+        Scene.build(wf, om, SyntheticBackend(), SOURCES, PARAMS, GRID, wind_level="W1", obs_wind="bogus")

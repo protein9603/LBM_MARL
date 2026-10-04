@@ -679,4 +679,5 @@ WIND_LEVEL_FORWARD = {"W0": "plume", "W1": "adjoint", "W2": "adjoint"}   # forwa
 WIND_MEAN_U = T1_4_ANALYTIC_U           # 1.68 m/s: the ONE reference wind speed given to W0/W1 (T1-3 chosen in-canopy 10-15 m band mean) [결정 D13]
 WIND_MEAN_DIR_DEG = 0.0                 # reference wind direction, deg CCW from +x (the domain inflow is +x, inflow column v = 0) [측정 3.3]
 WIND_PLUME_SIGMA_V = T1_4_ANALYTIC_SIGMA_V   # 0.9 m/s: lateral turbulence intensity of the W0 plume (T1-3 chosen) [결정 D13]
+OBS_WIND_MODES = ("model", "uniform")   # D15: wind entries of the policy observation read from the estimator's wind field ('model') or from a uniform (U, dir) field ('uniform'); W1-policy diagnosis
 WIND_POTENTIAL_SPEED_CAP = 2.5          # W1: potential flow is singular at building corners; cell speeds above 2.5 U are scaled down to 2.5 U (a few corner cells) [결정 D13]

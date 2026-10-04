@@ -32,7 +32,7 @@ from srcloc_env.env.source_env import Scene, SourceLocEnv, default_max_steps, lo
 from srcloc_env.eval.episodes import EpisodeSpec, load_episode_list, make_episode_list, save_episode_list
 from srcloc_env.eval.metrics import aggregate, paired_differences, table2_markdown
 
-RECORD_FIELDS = ["method", "n_drones", "episode_id", "seed", "source", "frame", "scale", "mode", "wind_level", "wind_u", "wind_dir_deg", "trained_wind_level", "start_type", "success", "steps",
+RECORD_FIELDS = ["method", "n_drones", "episode_id", "seed", "source", "frame", "scale", "mode", "wind_level", "wind_u", "wind_dir_deg", "obs_wind", "trained_wind_level", "start_type", "success", "steps",
                  "success_strict", "steps_strict", "min_error_m",
                  "final_error_m", "first_detection_step", "declared_step", "declared_error_m", "path_length_m", "n_masked",
                  "entropy_final", "top_sigma_final_m", "wall_s", "step_ms_median", "tie_tol", "tie_frac", "all_tied_frac", "calib_2sigma_frac"]
@@ -113,7 +113,7 @@ def run_episode(env: SourceLocEnv, policy, spec: EpisodeSpec, log_steps: bool = 
             log["entropy"].append(env.h_prev); log["top_sigma"].append(g.top_sigma()); log["map_error"].append(float(info["map_error_m"]))
             log["frame"].append(int(info["frame"])); log["reward"].append(float(r)); log["calib_inside"].append(inside[-1])
     rec = {"method": policy.name, "n_drones": n, "episode_id": spec.episode_id, "seed": spec.seed, "source": spec.source,
-           "frame": spec.frame, "scale": spec.scale, "mode": env.truth_mode, "wind_level": env.scene.wind_level, "wind_u": float(env.scene.wind_u), "wind_dir_deg": float(env.scene.wind_dir_deg),
+           "frame": spec.frame, "scale": spec.scale, "mode": env.truth_mode, "wind_level": env.scene.wind_level, "wind_u": float(env.scene.wind_u), "wind_dir_deg": float(env.scene.wind_dir_deg), "obs_wind": env.scene.obs_wind,
            "trained_wind_level": str(getattr(policy, "meta", {}).get("wind_level", "")) if hasattr(policy, "meta") else "", "start_type": start_type, "success": first_ok is not None,
            "steps": int(first_ok if first_ok is not None else info["t"]), "success_strict": first_strict is not None,
            "steps_strict": int(first_strict if first_strict is not None else info["t"]), "min_error_m": min_err,
@@ -148,9 +148,10 @@ def _worker(task: dict) -> dict:
     mode = task["mode"]
     wind_level = str(task.get("wind_level") or config.WIND_LEVEL_DEFAULT)
     wind_u, wind_dir = task.get("wind_u"), task.get("wind_dir_deg")
-    skey = (mode, wind_level, wind_u, wind_dir)
+    obs_wind = str(task.get("obs_wind") or "model")
+    skey = (mode, wind_level, wind_u, wind_dir, obs_wind)
     if skey not in _SCENES:
-        _SCENES[skey] = load_scene(mode, wind_level, wind_u, wind_dir)
+        _SCENES[skey] = load_scene(mode, wind_level, wind_u, wind_dir, obs_wind=obs_wind)
     max_steps = int(task.get("max_steps") or default_max_steps(mode))
     spec = EpisodeSpec(**task["spec"])
     kw = task.get("policy_kw", {}).get(task["method"], {})
@@ -160,7 +161,7 @@ def _worker(task: dict) -> dict:
             from srcloc_env.rl.ppo_policy import load_checkpoint
             _CKPT_OBS[kw["checkpoint"]] = str(load_checkpoint(kw["checkpoint"]).get("obs_version", "v1"))
         obs_version = _CKPT_OBS[kw["checkpoint"]]
-    key = (int(task["n_drones"]), mode, max_steps, obs_version, wind_level, wind_u, wind_dir)
+    key = (int(task["n_drones"]), mode, max_steps, obs_version, wind_level, wind_u, wind_dir, obs_wind)
     if key not in _ENVS:
         _ENVS[key] = make_env(_SCENES[skey], key[0], mode, max_steps, obs_version)
     env = _ENVS[key]
@@ -206,6 +207,7 @@ def _cast(row: dict) -> dict:
     out["wind_u"] = float(row["wind_u"]) if row.get("wind_u") not in (None, "") else float(config.WIND_MEAN_U)
     out["wind_dir_deg"] = float(row["wind_dir_deg"]) if row.get("wind_dir_deg") not in (None, "") else float(config.WIND_MEAN_DIR_DEG)
     out["trained_wind_level"] = str(row.get("trained_wind_level") or "")
+    out["obs_wind"] = str(row.get("obs_wind") or "model")
     return out
 
 
@@ -283,6 +285,7 @@ def main(argv: list[str] | None = None) -> dict:
     ap.add_argument("--wind-level", choices=list(config.WIND_LEVELS), default=config.WIND_LEVEL_DEFAULT, help="wind knowledge of the estimator (D13): W0 mean wind + Gaussian plume, W1 mean wind + building map, W2 CFD wind (default)")
     ap.add_argument("--wind-u", type=float, default=None, help="reference wind speed [m/s] given to W0 / W1 (default config.WIND_MEAN_U; sensitivity runs)")
     ap.add_argument("--wind-dir", type=float, default=None, help="reference wind direction [deg CCW from +x] given to W0 / W1 (default config.WIND_MEAN_DIR_DEG)")
+    ap.add_argument("--obs-wind", choices=list(config.OBS_WIND_MODES), default="model", help="wind entries of the policy observation: estimator wind field (model) or uniform reference wind (uniform; D15)")
     ap.add_argument("--scale-fixed", type=float, default=None)
     ap.add_argument("--max-steps", type=int, default=None, help="episode horizon (default 300 in Mode F, config.T2_MAX_STEPS = 150 in Mode T2)")
     ap.add_argument("--processes", type=int, default=config.EVAL_PROCESSES)
@@ -339,7 +342,7 @@ def main(argv: list[str] | None = None) -> dict:
             raise SystemExit(f"--ppo expects ALIAS=CHECKPOINT with a new alias, got {spec_s}")
         policy_kw[alias] = {"checkpoint": ckpt, "deterministic": args.ppo_deterministic}
         args.methods = list(args.methods) + [alias]
-    tasks = [{"method": m, "n_drones": n, "mode": args.mode, "wind_level": args.wind_level, "wind_u": args.wind_u, "wind_dir_deg": args.wind_dir, "max_steps": args.max_steps, "spec": spec.__dict__, "log_steps": args.log_steps,
+    tasks = [{"method": m, "n_drones": n, "mode": args.mode, "wind_level": args.wind_level, "wind_u": args.wind_u, "wind_dir_deg": args.wind_dir, "obs_wind": args.obs_wind, "max_steps": args.max_steps, "spec": spec.__dict__, "log_steps": args.log_steps,
               "step_dir": str(out_dir / "steps"), "policy_kw": policy_kw}
              for m in args.methods for n in args.n_drones for spec in specs]
     print(f"[eval] {len(specs)} episodes x {len(args.methods)} methods x {args.n_drones} drones = {len(tasks)} runs on "

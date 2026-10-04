@@ -34,6 +34,7 @@ class PPOPolicy(Policy):
         self.net.eval()
         self.meta = {k: ck.get(k) for k in ("iteration", "env_steps", "n_drones", "run_name", "truth_mode", "max_steps", "obs_version")}
         self.meta["wind_level"] = str(ck.get("wind_level", config.WIND_LEVEL_DEFAULT))          # checkpoints before D13 are W2
+        self.meta["obs_wind"] = str(ck.get("obs_wind", "model"))                                  # checkpoints before D15 read the model wind
         self.gen = torch.Generator().manual_seed(0)
 
     def reset(self, env, info: dict) -> None:   # noqa: ANN001
@@ -42,7 +43,8 @@ class PPOPolicy(Policy):
         if d != self.net.obs_dim:
             raise ValueError(f"checkpoint {self.checkpoint} expects {self.net.obs_dim} observation inputs, the {n}-drone environment gives {d}")
         for key, val in (("truth_mode", getattr(env, "truth_mode", None)), ("max_steps", getattr(env, "max_steps", None)), ("obs_version", getattr(env, "obs_version", None)),
-                         ("wind_level", getattr(getattr(env, "scene", None), "wind_level", None))):
+                         ("wind_level", getattr(getattr(env, "scene", None), "wind_level", None)),
+                         ("obs_wind", getattr(getattr(env, "scene", None), "obs_wind", None))):
             if self.meta.get(key) is not None and val is not None and self.meta[key] != val:
                 warnings.warn(f"checkpoint {self.checkpoint} was trained with {key} = {self.meta[key]} but is evaluated with {key} = {val}", stacklevel=2)
         seed = np.random.SeedSequence([int(info["source"]), int(info["frame"]), int(round(float(info["scale"]) * 1e6)), 13])

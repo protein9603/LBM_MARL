@@ -61,7 +61,7 @@ from srcloc_env import config
 from srcloc_env.env.drone import ACTION_STAY, DroneKinematics, ObstacleMap, heading_unit_vectors
 from srcloc_env.field.concentration_field import LdmSlabBackend
 from srcloc_env.field.wind import WindField
-from srcloc_env.field.wind_models import build_wind_field
+from srcloc_env.field.wind_models import build_wind_field, uniform_wind_field
 from srcloc_env.pf.forward_model import ForwardParams, GaussianPlume
 from srcloc_env.pf.gmm_summary import GmmSummary, summarise_pf
 from srcloc_env.pf.lbm_adjoint import AdjointParams, AdvectionDiffusionOperator, LbmAdjointModel
@@ -100,13 +100,19 @@ class Scene:
     plume_params: ForwardParams | None = None            # W0 only: the global Gaussian plume (U / direction follow ``wind``)
     wind_u: float = config.WIND_MEAN_U                   # reference wind given to W0 / W1 (informational for W2; sensitivity runs)
     wind_dir_deg: float = config.WIND_MEAN_DIR_DEG
+    obs_wind: str = "model"                              # D15: 'model' = observation wind from ``wind``; 'uniform' = from a uniform (wind_u, wind_dir_deg) field
+    obs_wind_field: WindField | None = None              # the uniform field when obs_wind == 'uniform'
+
+    def observation_wind(self) -> WindField:
+        """Wind field the policy observation reads (the estimator's field, or the uniform field of obs_wind='uniform')."""
+        return self.obs_wind_field if self.obs_wind_field is not None else self.wind
 
     @classmethod
     def build(cls, wind: WindField, obstacles: ObstacleMap, backend: TruthBackend,
               sources_xy: dict[int, tuple[float, float]] | None = None, params: AdjointParams | None = None,
               grid: SlabGrid = SlabGrid(), reflected: bool = False, max_cached: int = config.ADJ_MAX_CACHED,
               wind_level: str = config.WIND_LEVEL_DEFAULT, plume_params: ForwardParams | None = None,
-              wind_u: float = config.WIND_MEAN_U, wind_dir_deg: float = config.WIND_MEAN_DIR_DEG) -> "Scene":
+              wind_u: float = config.WIND_MEAN_U, wind_dir_deg: float = config.WIND_MEAN_DIR_DEG, obs_wind: str = "model") -> "Scene":
         """Forward model of the wind-knowledge level (config.WIND_LEVEL_FORWARD): 'adjoint' (W1, W2) assembles and
         factorises the advection-diffusion operator on the given wind / obstacles (LbmAdjointModel); 'plume' (W0) is
         the global Gaussian plume whose speed and direction are read from the (uniform) wind field, so that a
@@ -127,13 +133,17 @@ class Scene:
             op = AdvectionDiffusionOperator.from_data(params, wind, obstacles, grid=grid).factorize()
             model = LbmAdjointModel(op, max_cached=max_cached)
         src = dict(sources_xy if sources_xy is not None else config.SOURCES_XY)
+        if obs_wind not in config.OBS_WIND_MODES:
+            raise ValueError(f"obs_wind must be one of {config.OBS_WIND_MODES}, got {obs_wind!r}")
+        obs_field = uniform_wind_field(float(wind_u), float(wind_dir_deg)) if obs_wind == "uniform" else None
         return cls(wind, obstacles, backend, model, {int(k): (float(v[0]), float(v[1])) for k, v in src.items()},
-                   reflected, grid, params, time.perf_counter() - t0, wind_level, plume_params, float(wind_u), float(wind_dir_deg) + 0.0)
+                   reflected, grid, params, time.perf_counter() - t0, wind_level, plume_params, float(wind_u), float(wind_dir_deg) + 0.0,
+                   obs_wind, obs_field)
 
     @classmethod
     def load(cls, params: AdjointParams | None = None, backend: TruthBackend | None = None,
              max_cached_frames: int = config.FIELD_MAX_CACHED_FRAMES, wind_level: str = config.WIND_LEVEL_DEFAULT,
-             wind_u: float | None = None, wind_dir_deg: float | None = None) -> "Scene":
+             wind_u: float | None = None, wind_dir_deg: float | None = None, obs_wind: str = "model") -> "Scene":
         """The real scene: the wind of the requested knowledge level (W2 WindField.load(), W1 potential flow on the
         building map, W0 uniform; field/wind_models.py), ObstacleMap.load(), LdmSlabBackend(cache) and the chosen
         adjoint combination (config.ADJ_K_CHOSEN / ADJ_LAMBDA_CHOSEN; D8-1).  The truth never depends on the wind."""
@@ -142,7 +152,7 @@ class Scene:
         u = config.WIND_MEAN_U if wind_u is None else float(wind_u)                  # sensitivity runs perturb the reference wind (W0 / W1 only)
         d = config.WIND_MEAN_DIR_DEG if wind_dir_deg is None else float(wind_dir_deg)
         wf, _ = build_wind_field(wind_level, om, U=u, dir_deg=d)
-        return cls.build(wf, om, be, config.SOURCES_XY, params, wind_level=wind_level, wind_u=u, wind_dir_deg=d)
+        return cls.build(wf, om, be, config.SOURCES_XY, params, wind_level=wind_level, wind_u=u, wind_dir_deg=d, obs_wind=obs_wind)
 
     def reflected_scene(self) -> "Scene":
         """The y-mirrored scene (plan 4.5 학습 시 y 반사): wind (y -> -y, v -> -v, building arrays mirrored),
@@ -163,7 +173,8 @@ class Scene:
         grid_r = SlabGrid(g.x0, -(g.y0 + g.ny * g.res), g.nx, g.ny, g.res)   # cell centres -> -(original centres), involutive
         return Scene.build(wind_r, obs_r, self.backend, src_r, self.params, grid_r, reflected=not self.reflected,
                            max_cached=self.model.max_cached if hasattr(self.model, "max_cached") else config.ADJ_MAX_CACHED,
-                           wind_level=self.wind_level, plume_params=self.plume_params, wind_u=self.wind_u, wind_dir_deg=-self.wind_dir_deg)
+                           wind_level=self.wind_level, plume_params=self.plume_params, wind_u=self.wind_u, wind_dir_deg=-self.wind_dir_deg,
+                           obs_wind=self.obs_wind)
 
 
 # ------------------------------------------------------------------------------------------- environment
@@ -172,7 +183,7 @@ def default_max_steps(mode: str) -> int:
 
 
 def load_scene(mode: str, wind_level: str = config.WIND_LEVEL_DEFAULT, wind_u: float | None = None,
-               wind_dir_deg: float | None = None) -> Scene:
+               wind_dir_deg: float | None = None, obs_wind: str = "model") -> Scene:
     """The real scene; Mode T2 reads its truth from the memory-mapped slab stack (D11), Mode F from the per-frame
     cache; ``wind_level`` selects the estimator's wind knowledge (W0 / W1 / W2, plan D13); ``wind_u`` /
     ``wind_dir_deg`` override the reference wind of W0 / W1 (sensitivity runs)."""
@@ -180,7 +191,7 @@ def load_scene(mode: str, wind_level: str = config.WIND_LEVEL_DEFAULT, wind_u: f
     if mode == "T2":
         from srcloc_env.field.slab_stack import StackedSlabBackend
         backend = StackedSlabBackend()
-    return Scene.load(backend=backend, wind_level=wind_level, wind_u=wind_u, wind_dir_deg=wind_dir_deg)
+    return Scene.load(backend=backend, wind_level=wind_level, wind_u=wind_u, wind_dir_deg=wind_dir_deg, obs_wind=obs_wind)
 
 
 class SourceLocEnv(gym.Env):
@@ -372,7 +383,7 @@ class SourceLocEnv(gym.Env):
         k += 3 * self.n_recent
         obs[k] = min(1.0, self.steps_since_detection / config.ENV_DETECTION_NORM_STEPS)
         k += 1
-        obs[k:k + 2] = self.scene.wind.uv_at(self.xy, self.z)[0] / config.ENV_WIND_NORM
+        obs[k:k + 2] = self.scene.observation_wind().uv_at(self.xy, self.z)[0] / config.ENV_WIND_NORM
         k += 2
         obs[k:k + config.DRONE_N_HEADINGS] = self.scene.obstacles.ray_distances(self.xy, self.z)[0] / config.RAY_MAX_RANGE_M
         k += config.DRONE_N_HEADINGS
@@ -416,7 +427,7 @@ class SourceLocEnv(gym.Env):
         k += 3 * self.n_recent
         obs[k] = 1.0 if not self._seen_det else min(1.0, self.steps_since_detection / config.ENV_V2_DET_NORM_STEPS)
         k += 1
-        uv = self.scene.wind.uv_at(self.xy, self.z)[0] / config.ENV_WIND_NORM
+        uv = self.scene.observation_wind().uv_at(self.xy, self.z)[0] / config.ENV_WIND_NORM
         obs[k:k + 2] = uv
         k += 2
         obs[k:k + config.DRONE_N_HEADINGS] = heads @ uv
