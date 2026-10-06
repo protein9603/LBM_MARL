@@ -12,7 +12,7 @@ from srcloc_env.eval.run_eval import run_episode
 from srcloc_env.field.wind_models import (build_wind_field, potential_flow_diagnostics, potential_flow_field, potential_flow_uv,
                                           uniform_wind_field)
 from srcloc_env.pf.forward_model import GaussianPlume
-from srcloc_env.pf.lbm_adjoint import AdjointParams, AdvectionDiffusionOperator, LbmAdjointModel
+from srcloc_env.pf.sph_adjoint import AdjointParams, AdvectionDiffusionOperator, SphAdjointModel
 from srcloc_env.preprocess.gridder import SlabGrid
 from srcloc_env.rl.rollout import make_train_env
 from tests.test_source_env import DOMAIN_X, DOMAIN_Y, SOURCES, SyntheticBackend, _obstacles
@@ -74,9 +74,9 @@ def test_scene_w1_uses_the_adjoint_on_the_potential_flow_and_mirrors_consistentl
     om = _obstacles()
     wf = potential_flow_field(om, GRID, 1.5, 0.0)
     sc = Scene.build(wf, om, SyntheticBackend(), SOURCES, PARAMS, GRID, wind_level="W1")
-    assert isinstance(sc.model, LbmAdjointModel) and sc.wind_level == "W1"
+    assert isinstance(sc.model, SphAdjointModel) and sc.wind_level == "W1"
     r = sc.reflected_scene()
-    assert r.wind_level == "W1" and isinstance(r.model, LbmAdjointModel)
+    assert r.wind_level == "W1" and isinstance(r.model, SphAdjointModel)
     uv, uv_r = sc.model.operator.uv, r.model.operator.uv                 # mirrored operator wind = mirrored potential flow
     assert np.allclose(uv_r[::-1, :, 0], uv[..., 0], atol=1e-5) and np.allclose(uv_r[::-1, :, 1], -uv[..., 1], atol=1e-5)
 
@@ -137,7 +137,7 @@ def test_observation_wind_can_be_uniform_while_the_estimator_keeps_the_potential
     om = _obstacles()
     wf = potential_flow_field(om, GRID, 1.5, 0.0)
     sc = Scene.build(wf, om, SyntheticBackend(), SOURCES, PARAMS, GRID, wind_level="W1", wind_u=1.5, wind_dir_deg=0.0, obs_wind="uniform")
-    assert isinstance(sc.model, LbmAdjointModel) and sc.obs_wind == "uniform"
+    assert isinstance(sc.model, SphAdjointModel) and sc.obs_wind == "uniform"
     pts = np.array([[20.0, -50.0], [150.0, 40.0]])
     assert np.allclose(sc.observation_wind().uv_at(pts, config.DRONE_Z), [[1.5, 0.0], [1.5, 0.0]])    # constant for the policy
     assert not np.allclose(sc.wind.uv_at(pts, config.DRONE_Z), [[1.5, 0.0], [1.5, 0.0]])                # the estimator still sees the potential flow

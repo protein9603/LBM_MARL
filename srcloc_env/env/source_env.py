@@ -1,11 +1,11 @@
-"""Gymnasium single-drone source-localisation environment on the LDM slab truth with the LBM adjoint RB-PF belief
+"""Gymnasium single-drone source-localisation environment on the LDM slab truth with the SPH adjoint RB-PF belief
 (plan 4.5 환경·보상, 4.3 PF, 4.4 GMM 요약; D8-3 / S2 T2-1, T2-2, T2-3).
 
 One episode = one scene orientation (original or y-reflected), one true source, one sensor scale and one truth
 mode; the drone flies at config.DRONE_Z with 9 discrete actions (8 headings x config.DRONE_STEP_M, stay).  Every RL
 step (config.RL_STEP_SECONDS = 1 s): action -> DroneKinematics.step (building / domain masking; a masked action is a
 stay) -> one count measurement y ~ NB-or-Poisson((k0 scale n_s(p) + b) T) from the slab truth at the current
-frame -> RBPF.update(y, p) (LBM adjoint forward model, negative-binomial likelihood) -> GMM summary (every
+frame -> RBPF.update(y, p) (SPH adjoint forward model, negative-binomial likelihood) -> GMM summary (every
 ``gmm_every`` steps) -> observation / reward / termination.
 
 Observation (config.ENV_OBS_DIM = 56; plan 4.5):
@@ -15,7 +15,7 @@ Observation (config.ENV_OBS_DIM = 56; plan 4.5):
     [30:45)  last ENV_N_RECENT = 5 measurements, most recent first, (normalised log count Detector.normalise(y),
              (x_meas - x_drone)/1000, (y_meas - y_drone)/1000), zero-padded
     [45]     min(1, steps since the last Currie detection / ENV_DETECTION_NORM_STEPS)
-    [45+1:48) LBM wind (u, v) at the drone / ENV_WIND_NORM (15 m wind, field/wind.py)
+    [45+1:48) SPH wind (u, v) at the drone / ENV_WIND_NORM (15 m wind, field/wind.py)
     [48:56)  8-heading building distances / RAY_MAX_RANGE_M (ObstacleMap.ray_distances, E, NE, ..., SE)
 Observation version v2 (obs_version="v2", config.ENV_OBS_DIM_V2 = 64; recovery plan D12): egocentric and O(1) instead of the absolute
     GMM means/covariances (which acted as episode fingerprints) and the 1000 m-scaled measurement offsets (values of order 0.004):
@@ -64,7 +64,7 @@ from srcloc_env.field.wind import WindField
 from srcloc_env.field.wind_models import build_wind_field, uniform_wind_field
 from srcloc_env.pf.forward_model import ForwardParams, GaussianPlume
 from srcloc_env.pf.gmm_summary import GmmSummary, summarise_pf
-from srcloc_env.pf.lbm_adjoint import AdjointParams, AdvectionDiffusionOperator, LbmAdjointModel
+from srcloc_env.pf.sph_adjoint import AdjointParams, AdvectionDiffusionOperator, SphAdjointModel
 from srcloc_env.pf.particle_filter import RBPF
 from srcloc_env.preprocess.gridder import SlabGrid
 from srcloc_env.sensor.detector import Detector
@@ -86,11 +86,11 @@ class Scene:
 
     wind / obstacles / sources_xy are mirrored in a reflected scene; the truth backend is shared and queried with
     flip_y=reflected (LdmSlabBackend samples (x, -y)); the adjoint operator is assembled on the mirrored wind and
-    obstacles (one LU per orientation, lbm_forward_model.md 4)."""
+    obstacles (one LU per orientation, sph_forward_model.md 4)."""
     wind: WindField
     obstacles: ObstacleMap
     backend: TruthBackend
-    model: LbmAdjointModel | GaussianPlume
+    model: SphAdjointModel | GaussianPlume
     sources_xy: dict[int, tuple[float, float]]
     reflected: bool = False
     grid: SlabGrid = SlabGrid()
@@ -114,7 +114,7 @@ class Scene:
               wind_level: str = config.WIND_LEVEL_DEFAULT, plume_params: ForwardParams | None = None,
               wind_u: float = config.WIND_MEAN_U, wind_dir_deg: float = config.WIND_MEAN_DIR_DEG, obs_wind: str = "model") -> "Scene":
         """Forward model of the wind-knowledge level (config.WIND_LEVEL_FORWARD): 'adjoint' (W1, W2) assembles and
-        factorises the advection-diffusion operator on the given wind / obstacles (LbmAdjointModel); 'plume' (W0) is
+        factorises the advection-diffusion operator on the given wind / obstacles (SphAdjointModel); 'plume' (W0) is
         the global Gaussian plume whose speed and direction are read from the (uniform) wind field, so that a
         mirrored wind gives a mirrored plume."""
         t0 = time.perf_counter()
@@ -127,11 +127,11 @@ class Scene:
             U, direction = float(np.hypot(u, v)), float(np.degrees(np.arctan2(v, u)))
             base = plume_params if plume_params is not None else ForwardParams(U=max(U, config.FWD_U_MIN), sigma_v=config.WIND_PLUME_SIGMA_V)
             plume_params = dataclasses.replace(base, U=max(U, config.FWD_U_MIN), wind_dir_deg=direction)
-            model: LbmAdjointModel | GaussianPlume = GaussianPlume(plume_params, wind_mode="global")
+            model: SphAdjointModel | GaussianPlume = GaussianPlume(plume_params, wind_mode="global")
             wind_u, wind_dir_deg = round(float(plume_params.U), 6), round(float(plume_params.wind_dir_deg), 6)   # what the plume uses, without float32 noise (review D14)
         else:
             op = AdvectionDiffusionOperator.from_data(params, wind, obstacles, grid=grid).factorize()
-            model = LbmAdjointModel(op, max_cached=max_cached)
+            model = SphAdjointModel(op, max_cached=max_cached)
         src = dict(sources_xy if sources_xy is not None else config.SOURCES_XY)
         if obs_wind not in config.OBS_WIND_MODES:
             raise ValueError(f"obs_wind must be one of {config.OBS_WIND_MODES}, got {obs_wind!r}")

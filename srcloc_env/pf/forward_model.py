@@ -30,13 +30,13 @@ Two hypothesis -> response models share one interface (``unit_response`` / ``log
 
     Wind modes (plan S1 보강 / 4.2, option A, 2026-09-30):
       ``wind_mode='global'``  one wind for every hypothesis: params.U and params.wind_dir_deg (D3 behaviour).
-      ``wind_mode='local'``   the LBM wind AT EACH HYPOTHESIS: (u_i, v_i) = wind_field.uv_at(theta_i, z = wind_z)
+      ``wind_mode='local'``   the SPH wind AT EACH HYPOTHESIS: (u_i, v_i) = wind_field.uv_at(theta_i, z = wind_z)
         (bilinear, dead-node aware; field/wind.py, report 3.6).  The direction e_i = (u_i, v_i)/|(u_i, v_i)|
         and the speed U_i = max(|(u_i, v_i)|, config.FWD_U_MIN) replace e and U per source; d_i, c_i,
         sigma_y(d_i; U_i) and g follow exactly the formulas above, vectorised over N.  This is the textbook
         convention that U in the plume formula is the wind at the effective release point (R13, Seinfeld &
-        Pandis ch. 18), evaluated here on the LBM field instead of a domain mean, so that a hypothesis in a
-        channelled street or a courtyard is advected the way the LBM flow actually goes.  Below FWD_U_MIN the
+        Pandis ch. 18), evaluated here on the SPH field instead of a domain mean, so that a hypothesis in a
+        channelled street or a courtyard is advected the way the SPH flow actually goes.  Below FWD_U_MIN the
         plume model is meaningless (travel time -> infinity, the LDM plume of source 110 is trapped, report
         2.6) and the robust likelihood mixture (config.PF_EPS_MIX_TRAPPED, D4-3) must carry the hypothesis.
         Dead node (all four bracketing lattice nodes inside a building at wind_z -> (u, v) = (0, 0)) or any
@@ -79,7 +79,7 @@ class ForwardParams:
     sigma_z_ratio sigma_z / sigma_y                    (config.FWD_SIGMA_Z_RATIO, plan 4.2 선택)
     g_floor       response where d <= 0 and lower clip (config.FWD_G_FLOOR, plan 4.2)
     wind_dir_deg  wind direction [deg, CCW from +x]    (0 = +x; rotation augmentation changes it)
-    local_wind_blend  weight of the local LBM vector in wind_mode='local' (config.FWD_LOCAL_WIND_BLEND = 1:
+    local_wind_blend  weight of the local SPH vector in wind_mode='local' (config.FWD_LOCAL_WIND_BLEND = 1:
                   pure local; 0 reproduces the global wind) [plan S1 보강]; ignored in wind_mode='global'.
     """
 
@@ -106,7 +106,7 @@ class ForwardParams:
 class LocalWind:
     """Per-hypothesis wind of GaussianPlume.local_wind (plan S1 보강); all arrays are over the N sources.
 
-    uv        (N, 2) raw LBM (u, v) at the hypothesis and wind_z [m/s] (wind_field.uv_at; (0, 0) on dead nodes);
+    uv        (N, 2) raw SPH (u, v) at the hypothesis and wind_z [m/s] (wind_field.uv_at; (0, 0) on dead nodes);
               in wind_mode='global' the global vector U (cos, sin)(wind_dir_deg) is repeated.
     vec       (N, 2) blended vector blend * uv + (1 - blend) * U_global e_global.
     speed     (N,)   |vec| before the clip [m/s].
@@ -172,7 +172,7 @@ class GaussianPlume:
     ``unit_response(source_xy (N,2), drone_xyz (M,3)) -> g (N, M)`` in (particles/m^3) per (particle/s);
     ``log_unit_response`` returns log g computed in the log domain (no underflow before the floor).
 
-    wind_mode 'global' (default, params.U / params.wind_dir_deg for every hypothesis) or 'local' (LBM wind at
+    wind_mode 'global' (default, params.U / params.wind_dir_deg for every hypothesis) or 'local' (SPH wind at
     each hypothesis from ``wind_field``, plan S1 보강; see the module docstring and ``local_wind``).
     ``wind_z`` is the lookup height of the local wind (config.FWD_LOCAL_WIND_Z = the 15 m drone slab).
     """

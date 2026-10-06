@@ -1,7 +1,7 @@
-# LBM_MARL (srcloc_env)
+# srcloc_env (GitHub repository LBM_MARL; the flow solver is SPH, not LBM - the repository name is historical)
 
 Multi-drone radiological **source-term estimation (STE)** on a high-fidelity urban dispersion dataset
-(LBM wind field + Lagrangian dispersion model, Leipzig building geometry).
+(SPH wind field + Lagrangian dispersion model, Leipzig building geometry).
 
 Pipeline: point-measurement sensor (Wendland C6 gather + Poisson counts) → Rao-Blackwellised particle
 filter over the source position with the release-rate/sensitivity product marginalised → GMM belief
@@ -17,7 +17,7 @@ srcloc_env/                package (flat layout)
   config.py                every path and constant, with its source annotated
   io/                      ldm_reader (legacy VTK -> arrays + airborne/outflow masks), stl_tools
   preprocess/              gridder (per-source concentration slabs)
-  field/                   concentration_field (frame/scenario queries), wind (LBM wind lookup)
+  field/                   concentration_field (frame/scenario queries), wind (SPH wind lookup)
   sensor/                  detector (gather -> particles/m^3 -> Poisson counts)
   pf/                      forward_model, particle_filter (RB-PF), gmm_summary
   env/                     drone, source_env (Gymnasium), multi_agent

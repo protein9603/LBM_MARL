@@ -377,7 +377,7 @@ def make_figure(snaps: dict[int, dict[str, np.ndarray]], records: dict[int, dict
                Line2D([], [], marker="o", color="#440154", markersize=4, linestyle="none", label="particles (viridis: weight / max weight)"),
                Line2D([], [], color=COLOR_BUILDING, linewidth=1.0, label="building outline (hmap > 0)")]
     fig.legend(handles=handles, loc="lower center", ncol=4, fontsize=7.5, frameon=False)
-    fig.suptitle(f"Figure 5 - belief evolution of the RB-PF with the LBM adjoint model (filter {config.T1_4_SNAPSHOT_FILTER}, "
+    fig.suptitle(f"Figure 5 - belief evolution of the RB-PF with the SPH adjoint model (filter {config.T1_4_SNAPSHOT_FILTER}, "
                  f"seed 0, N = {config.PF_N_PARTICLES}, 2-drone lawnmower); window +-{half_width:.0f} m around the true source",
                  fontsize=10)
     fig.tight_layout(rect=(0.0, 0.05, 1.0, 0.96))

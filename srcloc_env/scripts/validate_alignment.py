@@ -1,6 +1,6 @@
-"""Independent alignment check: STL-derived occupancy grid vs the LBM solver's own building evidence.
+"""Independent alignment check: STL-derived occupancy grid vs the SPH solver's own building evidence.
 
-Ground truth for "where the buildings are in the LBM/LDM frame" comes from the fluid file itself:
+Ground truth for "where the buildings are in the SPH/LDM frame" comes from the fluid file itself:
   (1) p_type == 1000 immersed-boundary surface points (offlattice_points.npz: foot_cnt per 2.5 m cell),
   (2) near-ground lattice cells with |u| < 0.1 m/s at z = 1.25 m (fluid_slices_2p5m.npz).
 The environment uses occupancy_2m_flowframe.npz (STL shifted by config.STL_SHIFT, rasterised at 2 m).
@@ -107,7 +107,7 @@ def main() -> None:
     xor = np.zeros(ib_foot.shape, dtype=int); xor[ib_foot & occ25] = 1; xor[ib_foot & ~occ25] = 2; xor[~ib_foot & occ25] = 3
     cmap = matplotlib.colors.ListedColormap(["white", "0.6", "tab:blue", "tab:red"])
     ax.imshow(xor.T, origin="lower", extent=[x25[0] - 1.25, x25[-1] + 1.25, y25[0] - 1.25, y25[-1] + 1.25], cmap=cmap, vmin=-0.5, vmax=3.5, interpolation="nearest")
-    ax.set_title(f"(a) LBM building points vs STL occupancy (2.5 m lattice)\ngrey = both, blue = LBM only, red = STL only; Jaccard {j0:.3f}, best shift {(dix*2.5, diy*2.5)} m")
+    ax.set_title(f"(a) SPH building points vs STL occupancy (2.5 m lattice)\ngrey = both, blue = SPH only, red = STL only; Jaccard {j0:.3f}, best shift {(dix*2.5, diy*2.5)} m")
     ax.set_xlabel("x [m]"); ax.set_ylabel("y [m]"); ax.set_aspect("equal")
     for s, (sx, sy) in config.SOURCES_XY.items():
         ax.plot(sx, sy, "*", color="gold", mec="k", ms=9)
@@ -116,7 +116,7 @@ def main() -> None:
         sel = (np.abs(ib_sample[:, 0] - cx) < half) & (np.abs(ib_sample[:, 1] - cy) < half)
         ax.imshow(low.T, origin="lower", extent=[x25[0] - 1.25, x25[-1] + 1.25, y25[0] - 1.25, y25[-1] + 1.25], cmap="Greys", alpha=0.35, interpolation="nearest")
         ax.contour(x0 + np.arange(occ.shape[0]) * res, y0 + np.arange(occ.shape[1]) * res, occ.T.astype(float), levels=[0.5], colors="red", linewidths=1.2)
-        ax.scatter(ib_sample[sel, 0], ib_sample[sel, 1], s=3, c="tab:blue", label="LBM p_type 1000 points")
+        ax.scatter(ib_sample[sel, 0], ib_sample[sel, 1], s=3, c="tab:blue", label="SPH p_type 1000 points")
         selp = (np.abs(lowp[:, 0] - cx) < half) & (np.abs(lowp[:, 1] - cy) < half)
         ax.scatter(lowp[selp, 0], lowp[selp, 1], s=1, c="k", alpha=0.5, label="LDM particles z<10 m")
         ax.set_xlim(cx - half, cx + half); ax.set_ylim(cy - half, cy + half); ax.set_aspect("equal")

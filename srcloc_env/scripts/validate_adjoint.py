@@ -1,5 +1,5 @@
-"""D4-4 validation of pf/lbm_adjoint.py on the real LBM wind field and building raster (plan 4.2b option B-1;
-docs/lbm_forward_model.md section 7).
+"""D4-4 validation of pf/sph_adjoint.py on the real SPH wind field and building raster (plan 4.2b option B-1;
+docs/sph_forward_model.md section 7).
 
 Usage: python -m srcloc_env.scripts.validate_adjoint [--seed 0] [--out cache/validate_adjoint.json]
 Writes config.CACHE_DIR / validate_adjoint.json and config.FIG_DIR / fig_adjoint_check.png and prints PASS/FAIL:
@@ -29,7 +29,7 @@ import numpy as np
 from srcloc_env import config
 from srcloc_env.env.drone import ObstacleMap
 from srcloc_env.field.wind import WindField
-from srcloc_env.pf.lbm_adjoint import AdjointParams, AdvectionDiffusionOperator
+from srcloc_env.pf.sph_adjoint import AdjointParams, AdvectionDiffusionOperator
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt   # noqa: E402
@@ -105,7 +105,7 @@ def make_figure(op: AdvectionDiffusionOperator, om: ObstacleMap, fields: dict[in
         ax.set_title(f"source {s}: mass within {config.ADJ_VALIDATE_RADIUS_M:.0f} m = {fractions[s]:.2f}")
         fig.colorbar(pm, ax=ax, shrink=0.8, label="log10 density [particles/m^3 per particle/s]")
     p = op.params
-    fig.suptitle(f"LBM adjoint forward model, z = {p.z:.0f} m, K = {p.K} m^2/s, lambda = {p.lam} 1/s, "
+    fig.suptitle(f"SPH adjoint forward model, z = {p.z:.0f} m, K = {p.K} m^2/s, lambda = {p.lam} 1/s, "
                  f"h = {p.h_layer} m (unit source)", fontsize=10)
     path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(path, dpi=config.FIG_DPI_PREVIEW)

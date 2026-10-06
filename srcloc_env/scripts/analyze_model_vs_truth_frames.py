@@ -26,7 +26,7 @@ from srcloc_env import config
 from srcloc_env.env.source_env import Scene
 from srcloc_env.eval.metrics import GROUPS
 from srcloc_env.field.slab_stack import StackedSlabBackend
-from srcloc_env.pf.lbm_adjoint import AdvectionDiffusionOperator
+from srcloc_env.pf.sph_adjoint import AdvectionDiffusionOperator
 
 LEVELS = ("W0", "W1", "W2")
 COL = {"W0": "#2a78d6", "W1": "#eb6834", "W2": "#1baf7a"}

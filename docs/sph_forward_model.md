@@ -1,10 +1,10 @@
-# LBM 바람장 기반 전방모델 (선택지 B) 설계 설명서
+# SPH 바람장 기반 전방모델 (선택지 B) 설계 설명서
 
-작성일 2026-09-30 · 관련 코드 `srcloc_env/pf/lbm_adjoint.py`(D4-4~D5-2) · 참고문헌 references.md R15, R17~R21
+작성일 2026-09-30 · 관련 코드 `srcloc_env/pf/sph_adjoint.py`(D4-4~D5-2) · 참고문헌 references.md R15, R17~R21
 
 ## 1. 왜 필요한가
 
-파티클 필터(PF)는 "소스가 θ에 있다면 드론 위치 p에서 농도가 얼마일까"를 예측하는 **전방모델 g(θ, p)**가 있어야 우도를 계산합니다. 해석적 Gaussian plume은 "바람이 한 방향으로 균일하게 불고 플룸이 풍하로 퍼진다"고 가정하는데, 정체 소스 110·102처럼 안뜰·골목에 갇힌 플룸에서는 이 가정 자체가 깨져 어떤 파라미터로도 맞출 수 없음이 D3에서 확인되었습니다(슬랩/해석값 log10 비 −0.6~−5.4). 해결책은 전방모델도 **실제 LBM 바람장**을 쓰게 하는 것입니다. 이것이 선택지 B이고, "상세 속도장에서의 STE"라는 발표 주제와 정확히 맞습니다.
+파티클 필터(PF)는 "소스가 θ에 있다면 드론 위치 p에서 농도가 얼마일까"를 예측하는 **전방모델 g(θ, p)**가 있어야 우도를 계산합니다. 해석적 Gaussian plume은 "바람이 한 방향으로 균일하게 불고 플룸이 풍하로 퍼진다"고 가정하는데, 정체 소스 110·102처럼 안뜰·골목에 갇힌 플룸에서는 이 가정 자체가 깨져 어떤 파라미터로도 맞출 수 없음이 D3에서 확인되었습니다(슬랩/해석값 log10 비 −0.6~−5.4). 해결책은 전방모델도 **실제 SPH 바람장**을 쓰게 하는 것입니다. 이것이 선택지 B이고, "상세 속도장에서의 STE"라는 발표 주제와 정확히 맞습니다.
 
 ## 2. 물리 모델 (한 층짜리 2D 이류–확산)
 
@@ -12,7 +12,7 @@
 
     ∇·(u C) − ∇·(K ∇C) + λ C = q δ(x − x_s)
 
-- u(x, y): LBM 15 m 수평 바람(`field/wind.py`). 골목의 채널링, 안뜰의 정체·재순환이 여기 들어 있습니다.
+- u(x, y): SPH 15 m 수평 바람(`field/wind.py`). 골목의 채널링, 안뜰의 정체·재순환이 여기 들어 있습니다.
 - K: 유효 수평 확산계수. Taylor 이론(R15)으로 초기값 K = σ_v²·T_L ≈ (0.3~0.9)²×9.5 ≈ 1~8 m²/s.
 - λ: 층 밖으로 빠져나가는 연직 혼합과 침적을 한 번에 나타내는 1차 손실률(1/s). 데이터로 맞춥니다.
 - q: 방출률, x_s: 소스 위치. 방출은 σ0 = 4.4 m 발자국으로 퍼뜨려 넣습니다.
@@ -37,7 +37,7 @@ PF는 매 측정마다 가설 2,000개(θ) × 드론 1~3대(p)의 g(θ, p)가 �
 
 를 한 번 풀면 ψ_p(θ)가 곧 "θ에 단위 소스가 있을 때 p에서 보는 농도"가 됩니다(R17, R18). 직관적으로는 드론 위치에서 바람을 **거꾸로 되감아** "어디서 왔을 법한가"의 지도를 만드는 것입니다(R19의 backtracking). 드론 1대당 삼각 해 1번이면 되고, Aᵀ의 LU 분해는 처음 한 번만 합니다(`scipy.sparse.linalg.splu`, 약 1 s). 드론 셀별 ψ_p는 LRU 캐시에 저장합니다.
 
-Keats, Yee, Lien(2007, R17)이 도시 CFD 유동장에서 정확히 이 방식으로 소스–수신 관계를 만들어 베이지안 소스 추정을 했습니다. 우리는 (i) 유동장이 LBM이고, (ii) 추론이 MCMC가 아닌 PF이며, (iii) 수신점이 이동하는 드론이라는 점이 다릅니다.
+Keats, Yee, Lien(2007, R17)이 도시 CFD 유동장에서 정확히 이 방식으로 소스–수신 관계를 만들어 베이지안 소스 추정을 했습니다. 우리는 (i) 유동장이 SPH이고, (ii) 추론이 MCMC가 아닌 PF이며, (iii) 수신점이 이동하는 드론이라는 점이 다릅니다.
 
 ## 5. 알고리즘 단계
 
@@ -63,7 +63,7 @@ Keats, Yee, Lien(2007, R17)이 도시 CFD 유동장에서 정확히 이 방식�
 - 한 층 2D 근사: 연직 구조를 λ 하나로 축약. 소스 고도(5.5 m)에서 15 m까지의 상승은 σ0 발자국으로 근사.
 - 정상 유동 가정: 시간 변화 유동장이 오면 스냅샷별로 A를 다시 조립(1 s).
 - 5 m 격자의 수치확산은 K에 흡수되므로 K의 물리적 해석은 제한적.
-- 발표 문구 예: "the forward model is a steady 2-D advection–diffusion source–receptor (adjoint) model driven by the LBM wind field, calibrated against the LDM fields (Keats et al. 2007 approach adapted to a particle filter with mobile sensors)".
+- 발표 문구 예: "the forward model is a steady 2-D advection–diffusion source–receptor (adjoint) model driven by the SPH wind field, calibrated against the LDM fields (Keats et al. 2007 approach adapted to a particle filter with mobile sensors)".
 
 ## 9. 구현·캘리브레이션 결과 (2026-09-30, D4-4·D5-1·D5-2 기준)
 
@@ -79,7 +79,7 @@ Keats, Yee, Lien(2007, R17)이 도시 CFD 유동장에서 정확히 이 방식�
 
 | D8-1 K 선택의 PF 영향(T1-4, 필터 B, NB r 1, 고정 lawnmower) | 개방 소스 중앙값 K 8 48.5 / K 16 47.4 / K 32 54.1 m; 102 성공률 40 → 80 %; K 32는 108이 163 m로 붕괴(플룸이 과도하게 넓어져 먼 모드가 경쟁) → 형상 잔차 개선이 고정 경로 PF 정확도로 바로 이어지지는 않음(정확도 상한은 경로·클럼프가 지배, D7-4 결론과 일치) |
 
-수식·코드 대응: `AdvectionDiffusionOperator._assemble`(유한체적), `solve_adjoint`(Aᵀψ = e_p, SuperLU trans='T'), `LbmAdjointModel.unit_response`(수신 셀 LRU + 가설 위치 이중선형 보간).
+수식·코드 대응: `AdvectionDiffusionOperator._assemble`(유한체적), `solve_adjoint`(Aᵀψ = e_p, SuperLU trans='T'), `SphAdjointModel.unit_response`(수신 셀 LRU + 가설 위치 이중선형 보간).
 
 ## 10. W1: 평균 바람 + 건물 지도만으로 만든 바람장 (D13, 2026-10-03)
 같은 연산자(`AdvectionDiffusionOperator`, K 16·λ 0.005)에 CFD 바람 대신 `field/wind_models.potential_flow_field`의 2-D 포텐셜 유동을 넣는다: 자유 셀에서 ∇²φ = 0, 건물 면 무투과, 바깥 경계 원거리 φ = U(x cos α + y sin α), 속도 ∇φ(중심/한쪽 차분), 둘러싸인 안뜰 성분은 정지, 모서리 과속은 2.5 U 상한. 질량 보존·건물 우회만 있고 후류·재순환은 없다(진단 바람 모델 계열 R35~R38의 가장 단순한 형태). 검증·한계는 `docs/wind_knowledge_levels.md` 3장.

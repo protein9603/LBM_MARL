@@ -24,7 +24,7 @@ def deposited_mask(xyz: np.ndarray, velocity: np.ndarray) -> np.ndarray:
 
 
 def outflow_mask(xyz: np.ndarray) -> np.ndarray:
-    """Outflow pile-up artifact beyond the LBM lattice end (x >= X_OUTFLOW)."""
+    """Outflow pile-up artifact beyond the SPH lattice end (x >= X_OUTFLOW)."""
     return xyz[:, 0] >= config.X_OUTFLOW
 
 

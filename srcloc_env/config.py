@@ -17,7 +17,7 @@ import numpy as np
 # --------------------------------------------------------------------------------------
 DATA_DIR = Path(r"F:\김도현박사님 자료\JH")                      # raw data folder (never written to)
 LDM_FILE_TEMPLATE = "LDM_{step}stp.vtk"                          # [측정 1.1]
-FLUID_FILE = DATA_DIR / "fluid_30000stp.vtk"                      # LBM flow field [확인됨]
+FLUID_FILE = DATA_DIR / "fluid_30000stp.vtk"                      # SPH flow field [확인됨]
 STL_FILE = DATA_DIR / "Leipzig_buildings.stl"
 
 ARTIFACT_DIR = DATA_DIR / "분석스크립트"                         # reusable analysis artifacts (report 부록 B)
@@ -56,9 +56,9 @@ def ldm_path(index: int) -> Path:
 # --------------------------------------------------------------------------------------
 # Physical time  [확인됨 + 추정 A, report 2.3]
 # --------------------------------------------------------------------------------------
-DT_LDM_SECONDS = 0.25          # 1 LDM step = 0.25 s [확인됨(코드소유자)]
+DT_LDM_SECONDS = 0.25          # LEGACY: was read as '1 LDM step = 0.25 s'; the SOPHIA source (2026-10-06) shows 1 LDM step = 0.1 s and one FILE (25 solver steps) = 0.25 s. Kept until the time-axis decision (sophia_code_analysis.md 5) because derived constants below feed the PF kappa grid and the T2 frame advance.
 LDM_SUBSTEP = 10               # LDM acts every 10 index steps (emission + motion) [측정 2.2]
-SEC_PER_INDEX_STEP = DT_LDM_SECONDS / LDM_SUBSTEP   # interpretation A = 0.025 s [추정]; B would be 0.25 s
+SEC_PER_INDEX_STEP = DT_LDM_SECONDS / LDM_SUBSTEP   # LEGACY interpretation A = 0.025 s; the code says 0.01 s per solver step (see SOPHIA_* constants below) [정정 2026-10-06, 값은 아직 유지]
 RL_STEP_SECONDS = 1.0          # one RL step = sensor integration time T = 1 s [추정, plan 0]
 FILES_PER_RL_STEP = RL_STEP_SECONDS / (STEP_STRIDE * SEC_PER_INDEX_STEP)   # 1.6 under A [계산]
 FRAME_RANGE_MODE_F = (400, 599)      # fixed-snapshot episodes: steps 25025-30000 [plan 1]
@@ -68,7 +68,7 @@ MAX_EPISODE_STEPS = 300
 # --------------------------------------------------------------------------------------
 # Domain, lattice, geometry  [측정 3.1, 4.2, 5]
 # --------------------------------------------------------------------------------------
-DX = 2.5                                                          # LBM lattice spacing [m]
+DX = 2.5                                                          # SPH lattice spacing [m]
 DOMAIN_X = (0.0, 1315.0)
 DOMAIN_Y = (-657.5, 657.5)
 DOMAIN_Z = (-8.75, 371.25)
@@ -156,7 +156,7 @@ FIELD_MAX_CACHED_FRAMES = 8    # LRU size of float32 slab frames held by LdmSlab
 T0_5_QUERY_LATENCY_S = 1e-4    # T0-5 pass criterion: one cached slab query < 0.1 ms [plan 3 S0]
 
 # --------------------------------------------------------------------------------------
-# LBM wind field lookup  [측정 3.1, 3.3, 3.6; field/wind.py]
+# SPH wind field lookup  [측정 3.1, 3.3, 3.6; field/wind.py]
 # --------------------------------------------------------------------------------------
 WIND_AXIS_ORDER = "level,ix,iy,comp"   # levels_uvw.npz / fluid_slices_2p5m.npz uvw[i, ix, iy, c]: x = x[ix], y = y[iy] [측정, validate_wind]
 PLUME_REGION_X = (330.0, 1315.0)       # plume-region window of the report 3.3 band means: OPEN interval 330 < x < 1315 (v14_fluid_src_velocity_k.py) [측정 3.3]
@@ -266,7 +266,7 @@ T1_2B_GRID_ROUND_DECADES = 0.5      # recommended grid_decades is rounded up to 
 T1_2B_MISMATCH_DECADES = 0.9        # informational extra: trapped-source model mismatch up to 8x ~ 0.9 decade (report 2.6) [plan 4.3]
 Q_RELEASE_B = PARTICLES_PER_INDEX_STEP_PER_SOURCE / DT_LDM_SECONDS   # 26.66 particles/s actual release rate under interpretation B (index step = 0.25 s) [계산]
 # --------------------------------------------------------------------------------------
-# LBM adjoint forward model, option B-1  [plan 4.2b; docs/lbm_forward_model.md 2-5, 7; pf/lbm_adjoint.py; validate_adjoint]  -- appended D4-4
+# SPH adjoint forward model, option B-1  [plan 4.2b; docs/sph_forward_model.md 2-5, 7; pf/sph_adjoint.py; validate_adjoint]  -- appended D4-4
 # --------------------------------------------------------------------------------------
 ADJ_SIGMA_V_REF = 0.65             # sigma_v of the default K: middle of the report 2.1 range 0.3-0.9 m/s (FWD_SIGMA_V_CANDIDATES) [추정, plan 4.2b]
 ADJ_K_DEFAULT = 4.0                # effective horizontal diffusivity K = sigma_v^2 T_L = 0.65^2 x 9.5 = 4.01 m^2/s (R15 Taylor, far-field limit) [계산]
@@ -279,7 +279,7 @@ ADJ_LAMBDA_CHOSEN = 0.005          # [결정 2026-10-01 D8-1] loss rate paired w
 ADJ_SOLVE_TIME_TARGET_S = 0.02     # one adjoint solve (receptor -> psi field) must fit the 20 ms environment-step budget [plan 4.2b]
 ADJ_FOOTPRINT_TRUNC_SIGMA = 3.0    # source footprint = Gaussian(RELEASE_SIGMA_XY) on the box of +-ceil(3 sigma0 / res) cells, renormalised to 1 over free cells [추정]
 ADJ_CACHE_ROUND_M = 0.5            # receptor position rounding of the psi LRU key [m] (plan 4.2b: cell index + bilinear offsets to 0.5 m) [plan 4.2b]
-ADJ_MAX_CACHED = 512               # psi fields held by the LbmAdjointModel LRU (207 x 200 float64 = 0.33 MB each -> 85 MB) [계산]  # raised 256 -> 512 (2026-09-30): a 2-drone 150-step episode touches ~300 receptors; ~170 MB
+ADJ_MAX_CACHED = 512               # psi fields held by the SphAdjointModel LRU (207 x 200 float64 = 0.33 MB each -> 85 MB) [계산]  # raised 256 -> 512 (2026-09-30): a 2-drone 150-step episode touches ~300 receptors; ~170 MB
 ADJ_FACTORIZE_TIME_TARGET_S = 10.0 # criterion on assembly + LU factorisation of the real-size grid (200 x 207, ~20 % blocked) [plan D4-4]
 ADJ_TEST_SOLVE_TIME_LOOSE_S = 0.1  # unit-test (CI) bound on the adjoint solve median; the 20 ms target itself is checked by validate_adjoint [plan D4-4]
 ADJ_VALIDATE_N_RECEPTORS = 50      # validate_adjoint: random free receptors timed (median / p99) [plan D4-4]
@@ -292,7 +292,7 @@ ADJ_FIG_HALF_WIDTH_M = 200.0       # fig_adjoint_check: +-200 m window around ea
 # --------------------------------------------------------------------------------------
 # Local-wind Gaussian plume, option A  [plan S1 보강 (2026-09-30), 4.2; pf/forward_model.py; validate_forward_local]  -- appended D4-2
 # --------------------------------------------------------------------------------------
-FWD_WIND_MODES = ("global", "local")   # GaussianPlume.wind_mode: 'global' = params.U / wind_dir_deg for all hypotheses (D3), 'local' = LBM wind at each hypothesis [plan S1 보강]
+FWD_WIND_MODES = ("global", "local")   # GaussianPlume.wind_mode: 'global' = params.U / wind_dir_deg for all hypotheses (D3), 'local' = SPH wind at each hypothesis [plan S1 보강]
 FWD_U_MIN = 0.3                        # [m/s] lower clip of the per-hypothesis speed U_i = max(|(u,v)|, FWD_U_MIN); below this the plume model is meaningless (travel time -> inf, trapped plume of 110) and the robust mixture must carry the hypothesis [plan S1 보강, 결정 2026-09-30]
 FWD_LOCAL_WIND_Z = DRONE_Z             # [m] lookup height of the local wind = the 15 m drone slab (stored levels 13.75/16.25 interpolated, report 3.6) [plan S1 보강]
 FWD_LOCAL_WIND_BLEND = 1.0             # default ForwardParams.local_wind_blend: 1 = pure local vector, 0 = global (params.U, wind_dir_deg); intermediate values mix the two vectors [plan S1 보강]
@@ -331,7 +331,7 @@ T1_5_FLIP_MAX = 0.1            # pass: component-order flip rate between consecu
 GMM_MERGE_BHAT = 0.30          # merge EM components with Bhattacharyya distance below this (~1.55 sigma apart for equal covariances); 0.25 left 102's split mode (B 0.26) flipping [계산, D6-2b]
 
 # --------------------------------------------------------------------------------------
-# D5-2 PF <-> LBM adjoint connection (plan 4.2b 검증 "갱신당 시간 <= 20 ms", S1 T1-2 lite with the LBM model;
+# D5-2 PF <-> SPH adjoint connection (plan 4.2b 검증 "갱신당 시간 <= 20 ms", S1 T1-2 lite with the SPH model;
 # scripts/validate_pf_adjoint.py, tests/test_pf_adjoint.py)  -- appended D5-2
 # --------------------------------------------------------------------------------------
 PF_ADJ_SOURCES = (109, 110, 101, 113)      # open 109 (holdout), trapped courtyard 110, two more open sources 101 / 113 (report 2.6) [plan D5-2]
@@ -348,16 +348,16 @@ PF_ADJ_FIG_HALF_WIDTH_M = 200.0            # belief-scatter panel: +-200 m windo
 PF_ADJ_TEST_N_MEASUREMENTS = 60            # unit test: MAP error < PF_ADJ_TEST_MAP_ERROR_CELLS cells after this many measurements on the 40 x 30 synthetic grid [plan D5-2]
 PF_ADJ_TEST_MAP_ERROR_CELLS = 2.0          # unit test pass criterion in grid cells [plan D5-2]
 # --------------------------------------------------------------------------------------
-# T1-3b adjoint-model calibration  [plan 4.2b 캘리브레이션, S1 T1-3b; docs/lbm_forward_model.md 6; scripts/calibrate_adjoint.py]  -- appended D5-1
+# T1-3b adjoint-model calibration  [plan 4.2b 캘리브레이션, S1 T1-3b; docs/sph_forward_model.md 6; scripts/calibrate_adjoint.py]  -- appended D5-1
 # --------------------------------------------------------------------------------------
-T1_3B_WIND_LAYERS: dict[str, tuple[float, float] | None] = {"single_15m": None, "band_10_20m": (10.0, 20.0)}   # wind layer candidates of the adjoint operator: single 15 m wind (AdjointParams.wind_band None) vs per-cell mean over the stored LBM levels in [10, 20) m (11.25/13.75/16.25/18.75) [plan 4.2b, lbm_forward_model.md 6]
+T1_3B_WIND_LAYERS: dict[str, tuple[float, float] | None] = {"single_15m": None, "band_10_20m": (10.0, 20.0)}   # wind layer candidates of the adjoint operator: single 15 m wind (AdjointParams.wind_band None) vs per-cell mean over the stored SPH levels in [10, 20) m (11.25/13.75/16.25/18.75) [plan 4.2b, sph_forward_model.md 6]
 T1_3B_SELECTION_KEY = "mean_train_std_dense"        # T1-3b selection statistic: mean over TRAIN_SOURCES of std(rho') on the dense cells (n_LDM >= T1_3_INFO_DENSITY_FRACTION x source max); the plain std is fringe-dominated (validation_log "T1-3 FAIL의 해석") and its argmin is reported next to it [결정 D5-1]
 T1_3B_G_MIN = T1_3_G_FLOOR_FACTOR * FWD_G_FLOOR       # 1e-8 (particles/m^3)/(particle/s): a cell counts as "model present" only above this, the same floor rule as calibrate_forward (D4-3); g == 0 exactly marks the support mismatch (wall cell / other free component) [plan D5-1]
 # --------------------------------------------------------------------------------------
 # T1-2 kappa-marginalisation bias check  [plan S1 T1-2, 4.3 (R5 Rao-Blackwellisation); scripts/validate_kappa_bias.py,
 # tests/test_kappa_bias.py; figure 4]  -- appended D5-3
 # --------------------------------------------------------------------------------------
-T1_2_CASES = (("analytic", 109), ("analytic", 101), ("adjoint", 109))   # (forward model, true source): GaussianPlume (global, config defaults) for 109 and 101; LbmAdjointModel (real 15 m wind, default AdjointParams) for 109 [plan D5-3]
+T1_2_CASES = (("analytic", 109), ("analytic", 101), ("adjoint", 109))   # (forward model, true source): GaussianPlume (global, config defaults) for 109 and 101; SphAdjointModel (real 15 m wind, default AdjointParams) for 109 [plan D5-3]
 T1_2_N_REPEATS = 20                     # seeded repeats per case (kappa_true, Poisson counts, PF prior draw) [plan D5-3]
 T1_2_N_STEPS = 100                      # lawnmower steps per drone: PF_ADJ_N_DRONES x 100 = 200 measurements per repeat [plan D5-3]
 T1_2_KAPPA_TRUE_DECADES = 1.0           # kappa_true ~ log-uniform KAPPA_REF x 10^[-1, +1] per repeat [plan D5-3]
@@ -395,7 +395,7 @@ T1_4_GMM_EVERY = 5                                 # success test (GMM top sigma
 T1_4_GMM_SEED = 0                                  # rng seed of the weighted k-means++ initialisation of summarise_pf (deterministic success test) [plan D6-1]
 T1_4_ANALYTIC_U = 1.68                             # filter A: GaussianPlume global wind, chosen T1-3 combination (calibrate_forward.json chosen: U 1.68, sigma_v 0.9) [plan T1-3 결과]
 T1_4_ANALYTIC_SIGMA_V = 0.9                        # [plan T1-3 결과]
-T1_4_ADJOINT_K = ADJ_K_CHOSEN                      # filter B: LbmAdjointModel at the chosen combination (D5-1: K 8 / lam 0.005 at the grid edge -> D8-1: K 16 / lam 0.005, calibrate_adjoint.json chosen via --chosen; validation_log 전방모델 결정) [plan T1-3b 결과, D8-1]
+T1_4_ADJOINT_K = ADJ_K_CHOSEN                      # filter B: SphAdjointModel at the chosen combination (D5-1: K 8 / lam 0.005 at the grid edge -> D8-1: K 16 / lam 0.005, calibrate_adjoint.json chosen via --chosen; validation_log 전방모델 결정) [plan T1-3b 결과, D8-1]
 T1_4_ADJOINT_LAM = ADJ_LAMBDA_CHOSEN               # [plan T1-3b 결과, D8-1]
 T1_4_FILTER_EPS = {"A": PF_EPS_MIX, "A2": PF_EPS_MIX_TRAPPED, "B": PF_EPS_MIX, "B2": PF_EPS_MIX_TRAPPED}   # robust mixture eps per filter label: A/B = 0.05, A2/B2 = 0.1 (trapped-source variant, plan S1 보강) [plan D6-1]
 T1_4_FINAL_ERROR_PASS_M = PF_ADJ_MAP_ERROR_PASS_M  # G1 (i)/(ii): open sources (T1_3_OPEN_SOURCES) median final MAP error < 30 m [plan T1-4 / G1]
@@ -681,3 +681,25 @@ WIND_MEAN_DIR_DEG = 0.0                 # reference wind direction, deg CCW from
 WIND_PLUME_SIGMA_V = T1_4_ANALYTIC_SIGMA_V   # 0.9 m/s: lateral turbulence intensity of the W0 plume (T1-3 chosen) [결정 D13]
 OBS_WIND_MODES = ("model", "uniform")   # D15: wind entries of the policy observation read from the estimator's wind field ('model') or from a uniform (U, dir) field ('uniform'); W1-policy diagnosis
 WIND_POTENTIAL_SPEED_CAP = 2.5          # W1: potential flow is singular at building corners; cell speeds above 2.5 U are scaled down to 2.5 U (a few corner cells) [결정 D13]
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Facts read from the SOPHIA_gpu source code (2026-10-06; docs/sophia_code_analysis.md). INFORMATIONAL: nothing below is
+# used by the estimator yet; the active legacy constants above (interpretation A) stay until the time-axis decision.
+SOPHIA_SOLVER_DT_S = 0.01                 # solver time step [s] (solv file 'time-step'); file suffix <N>stp = solver step N (state after N+1 updates)
+SOPHIA_LDM_SUBSTEP_STEPS = 10             # LDM advances every 10 solver steps ('LDM-frequency: 10')
+SOPHIA_LDM_STEP_S = SOPHIA_SOLVER_DT_S * SOPHIA_LDM_SUBSTEP_STEPS   # 0.1 s per LDM Langevin step
+SOPHIA_FILE_STEPS = 25                    # LDM_<N>stp.vtk written every 25 solver steps (hard-coded in ISPH_Calc.cuh)
+SOPHIA_FILE_INTERVAL_S = SOPHIA_SOLVER_DT_S * SOPHIA_FILE_STEPS      # 0.25 s between consecutive LDM files (600 files = t 150.25..300 s)
+SOPHIA_RELEASE_GATE_S = 150.0             # LDM release / averaging gate (AVG_START_TIME); float32 clock opens it at step 15001
+SOPHIA_PARTICLES_PER_SOURCE = 100_000     # LDM input: 13 sources x 100,000 particles, all at z = 5 m, t_release uniform 150..300 s
+SOPHIA_RELEASE_RATE_PER_S = SOPHIA_PARTICLES_PER_SOURCE / 150.0      # 666.7 particles/s per source (66.7 per 0.1 s LDM step)
+SOPHIA_INFLOW_U_REF = 10.0                # steady power-law inflow u(z) = U_REF (z / Z_REF)^ALPHA along +x (also the initial condition)
+SOPHIA_INFLOW_Z_REF = 371.25
+SOPHIA_INFLOW_ALPHA = 0.19
+SOPHIA_FULL_FIELD_STEPS = (20000, 25000, 30000)   # the only full fluid snapshots of a production run (t ~ 200, 250, 300 s); fluid_30000stp.vtk = instantaneous field at t = 300 s
+SOPHIA_MEAN_FIELD_WINDOW_S = (150.0, 299.0)       # out/mean_field.bin = per-step time mean (u, v, w, k, eps) over this window; not in the handover
+
+
+def sophia_inflow_u(z_m: float) -> float:
+    """Inflow / initial wind speed [m/s] of the SOPHIA Leipzig run at height z (power law; 5.0 m/s at 10 m, 5.4 m/s at 15 m)."""
+    return SOPHIA_INFLOW_U_REF * (max(float(z_m), 0.0) / SOPHIA_INFLOW_Z_REF) ** SOPHIA_INFLOW_ALPHA if z_m > 0 else 0.0

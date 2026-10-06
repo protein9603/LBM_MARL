@@ -1,4 +1,4 @@
-"""Unit tests for pf/lbm_adjoint.py (plan 4.2b option B-1, docs/lbm_forward_model.md section 7) on synthetic
+"""Unit tests for pf/sph_adjoint.py (plan 4.2b option B-1, docs/sph_forward_model.md section 7) on synthetic
 grids only (no raw data): reciprocity, mass balance, walls, Gaussian far field, rotation invariance, the PF
 model wrapper, from_data on synthetic WindField / ObstacleMap, and timing on the real-size grid."""
 import time
@@ -9,7 +9,7 @@ import pytest
 from srcloc_env import config
 from srcloc_env.env.drone import ObstacleMap
 from srcloc_env.field.wind import WindField
-from srcloc_env.pf.lbm_adjoint import AdjointParams, AdvectionDiffusionOperator, LbmAdjointModel
+from srcloc_env.pf.sph_adjoint import AdjointParams, AdvectionDiffusionOperator, SphAdjointModel
 from srcloc_env.pf.particle_filter import RBPF
 from srcloc_env.preprocess.gridder import SlabGrid
 
@@ -185,13 +185,13 @@ def test_rotation_invariance_transposed_field():
 
 
 def test_model_unit_response_shapes_cache_and_forward_agreement():
-    """(6) LbmAdjointModel: (N, M) shapes, agreement with solve_forward for sources at cell centres, LRU."""
+    """(6) SphAdjointModel: (N, M) shapes, agreement with solve_forward for sources at cell centres, LRU."""
     rng = np.random.default_rng(3)
     grid = SlabGrid(x0=0.0, y0=0.0, nx=40, ny=30, res=5.0)
     blocked = np.zeros((30, 40), dtype=bool)
     blocked[5:9, 10:13] = True
     op = build(grid, sheared_wind(grid), blocked)
-    model = LbmAdjointModel(op, max_cached=2)
+    model = SphAdjointModel(op, max_cached=2)
     cc = op.free_cell_centres()
     src_idx = rng.integers(0, op.n_free, 5)
     src = cc[src_idx]

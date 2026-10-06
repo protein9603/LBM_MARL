@@ -1,6 +1,6 @@
-"""T1-3b: shape-based calibration of the LBM adjoint forward model (option B-1) against the LDM slabs and
+"""T1-3b: shape-based calibration of the SPH adjoint forward model (option B-1) against the LDM slabs and
 comparison with the analytic Gaussian plume of T1-3 (plan 4.2b 캘리브레이션, S1 T1-3b / T1-4 preparation; D5-1;
-docs/lbm_forward_model.md section 6; slide 9, table 1, figure 3).
+docs/sph_forward_model.md section 6; slide 9, table 1, figure 3).
 
 Usage: python -m srcloc_env.scripts.calibrate_adjoint [--index 599] [--out <CACHE_DIR>/calibrate_adjoint.json]
        [--fig-dir <FIG_DIR>] [--analytic <CACHE_DIR>/calibrate_forward.json]
@@ -15,7 +15,7 @@ truth   per-source airborne slab density n_LDM(x, y) [particles/m^3] of frame in
 model   g(theta_s, p) = AdvectionDiffusionOperator.solve_forward(config.SOURCES_XY[s]) [particles/m^3 per
         particle/s] on the same grid, for every combination of K in config.ADJ_K_CANDIDATES x lam in
         config.ADJ_LAMBDA_CANDIDATES x wind layer in config.T1_3B_WIND_LAYERS (single 15 m wind, wind_band =
-        None, vs the per-cell mean over the stored LBM levels in [10, 20) m; lbm_forward_model.md section 6).
+        None, vs the per-cell mean over the stored SPH levels in [10, 20) m; sph_forward_model.md section 6).
         One assembly + LU factorisation per combination, 13 forward solves each.
 cells   C_both = {n_LDM > 0 and g > g_min}, g_min = config.T1_3B_G_MIN (= T1_3_G_FLOOR_FACTOR x FWD_G_FLOOR, the
         floor rule of calibrate_forward; the PF floors g at FWD_G_FLOOR anyway).  The adjoint model has NO
@@ -88,7 +88,7 @@ from srcloc_env import config  # noqa: E402
 from srcloc_env.env.drone import ObstacleMap  # noqa: E402
 from srcloc_env.field.concentration_field import LdmSlabBackend  # noqa: E402
 from srcloc_env.field.wind import WindField  # noqa: E402
-from srcloc_env.pf.lbm_adjoint import AdjointParams, AdvectionDiffusionOperator  # noqa: E402
+from srcloc_env.pf.sph_adjoint import AdjointParams, AdvectionDiffusionOperator  # noqa: E402
 from srcloc_env.preprocess.gridder import SlabGrid  # noqa: E402
 from srcloc_env.scripts.calibrate_forward import implied_kappa, source_type  # noqa: E402
 
@@ -371,7 +371,7 @@ def render_figure3_adjoint(grid: SlabGrid, omap: ObstacleMap, panels: dict[int, 
         ax.annotate("", xy=(xs + L * np.cos(a), ys + L * np.sin(a)), xytext=(xs, ys), zorder=8,
                     arrowprops=dict(arrowstyle="-|>", lw=1.8, color="black", shrinkA=0, shrinkB=0))
         ax.text(xs + 0.5 * L * np.cos(a), ys + 0.5 * L * np.sin(a) - 14,
-                f"LBM wind at source {w['speed']:.2f} m/s, {w['dir_deg']:.0f} deg", fontsize=7.5, ha="center",
+                f"SPH wind at source {w['speed']:.2f} m/s, {w['dir_deg']:.0f} deg", fontsize=7.5, ha="center",
                 va="top", zorder=8, path_effects=[pe.withStroke(linewidth=2.0, foreground="white")])
         x0, x1, y0, y1 = _window(xs, ys, grid)
         ax.set_xlim(x0, x1)
@@ -411,7 +411,7 @@ def render_figure3_adjoint(grid: SlabGrid, omap: ObstacleMap, panels: dict[int, 
         cb.set_label("particles / m$^3$ (log10 scale)")
         numbers[f"density_log_vmin_{s}"] = vmin
         numbers[f"density_log_vmax_{s}"] = vmax
-    fig.suptitle(f"Figure 3 (adjoint, draft): LBM adjoint model mismatch at the chosen T1-3b combination ({combo_txt}), "
+    fig.suptitle(f"Figure 3 (adjoint, draft): SPH adjoint model mismatch at the chosen T1-3b combination ({combo_txt}), "
                  f"frame {index} = step {config.index_to_step(index)}", fontsize=10.5)
     fig.tight_layout(rect=(0, 0, 1, 0.97))
     out_png.parent.mkdir(parents=True, exist_ok=True)
@@ -446,7 +446,7 @@ def render_comparison(src_ids: tuple[int, ...], analytic_ps: dict[str, dict], ad
     ax.bar(x - wbar / 2, np.nan_to_num(a_vals), wbar, color="white", edgecolor=cols, hatch="////", linewidth=1.2,
            label="analytic plume (T1-3)", zorder=3)
     ax.bar(x + wbar / 2, np.nan_to_num(b_vals), wbar, color=cols, edgecolor="white", linewidth=1.0,
-           label="LBM adjoint (T1-3b)", zorder=3)
+           label="SPH adjoint (T1-3b)", zorder=3)
     for xi, (va, vb) in enumerate(zip(a_vals, b_vals)):
         if np.isfinite(va):
             ax.text(xi - wbar / 2, va + 0.04, f"{va:.2f}", ha="center", va="bottom", fontsize=7, color="#333333")
@@ -462,13 +462,13 @@ def render_comparison(src_ids: tuple[int, ...], analytic_ps: dict[str, dict], ad
         ax.spines[side].set_visible(False)
     handles = [Patch(facecolor="white", edgecolor="#555555", hatch="////", label="analytic plume "
                      f"(U {analytic_combo['U']:g} m/s, sigma_v {analytic_combo['sigma_v']:g} m/s, {analytic_combo['wind_mode']})"),
-               Patch(facecolor="#555555", label=f"LBM adjoint (K {adjoint_combo['K']:g} m$^2$/s, lambda {adjoint_combo['lam']:g} 1/s, "
+               Patch(facecolor="#555555", label=f"SPH adjoint (K {adjoint_combo['K']:g} m$^2$/s, lambda {adjoint_combo['lam']:g} 1/s, "
                      f"{adjoint_combo['wind_layer']})")]
     handles += [Patch(facecolor=TYPE_COLORS[k], label=f"{k} source") for k in ("open", "trapped", "holdout", "train")]
     handles.append(Line2D([0], [0], color="#777777", lw=1.0, ls="--", label=f"plan criterion std(rho') < {config.T1_3_STD_PASS:g}"))
     ax.legend(handles=handles, fontsize=7.5, loc="upper left", ncol=3, frameon=False)
     ax.set_title(f"Shape residual per source, frame {config.T1_3_FRAME_INDEX} (step {config.index_to_step(config.T1_3_FRAME_INDEX)}), "
-                 f"z = {config.DRONE_Z:g} m: analytic plume vs LBM adjoint model", fontsize=10)
+                 f"z = {config.DRONE_Z:g} m: analytic plume vs SPH adjoint model", fontsize=10)
     ax.set_ylim(0, float(np.nanmax(np.r_[a_vals, b_vals])) * 1.4)
     fig.tight_layout()
     out_png.parent.mkdir(parents=True, exist_ok=True)

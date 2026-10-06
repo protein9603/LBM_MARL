@@ -12,7 +12,7 @@ from srcloc_env import config
 from srcloc_env.env.source_env import Scene
 from srcloc_env.eval.episodes import EpisodeSpec
 from srcloc_env.eval.run_eval import run_episode
-from srcloc_env.pf.lbm_adjoint import AdjointParams
+from srcloc_env.pf.sph_adjoint import AdjointParams
 from srcloc_env.preprocess.gridder import SlabGrid
 from srcloc_env.rl import train as tr
 from srcloc_env.rl.ppo import ActorCritic

@@ -33,7 +33,7 @@ the D6 Poisson baseline needs --likelihood poisson (D7-3 review); plan 4.3):
     A   GaussianPlume(global, ForwardParams(U = config.T1_4_ANALYTIC_U, sigma_v = config.T1_4_ANALYTIC_SIGMA_V)),
         eps_mix = config.PF_EPS_MIX (the T1-3 chosen combination, calibrate_forward.json)
     A2  the same with eps_mix = config.PF_EPS_MIX_TRAPPED (plan S1 보강)
-    B   LbmAdjointModel(AdvectionDiffusionOperator.from_data(AdjointParams(K = config.T1_4_ADJOINT_K,
+    B   SphAdjointModel(AdvectionDiffusionOperator.from_data(AdjointParams(K = config.T1_4_ADJOINT_K,
         lam = config.T1_4_ADJOINT_LAM), WindField.load(), ObstacleMap.load())) factorised once and shared,
         eps_mix = config.PF_EPS_MIX (the T1-3b chosen combination, calibrate_adjoint.json; plan 4.2b)
     B2  the same with eps_mix = config.PF_EPS_MIX_TRAPPED
@@ -93,7 +93,7 @@ from srcloc_env.field.concentration_field import LdmSlabBackend
 from srcloc_env.field.wind import WindField
 from srcloc_env.pf.forward_model import ForwardParams, GaussianPlume
 from srcloc_env.pf.gmm_summary import summarise_pf
-from srcloc_env.pf.lbm_adjoint import AdjointParams, AdvectionDiffusionOperator, LbmAdjointModel
+from srcloc_env.pf.sph_adjoint import AdjointParams, AdvectionDiffusionOperator, SphAdjointModel
 from srcloc_env.pf.particle_filter import RBPF
 from srcloc_env.scripts.validate_pf_adjoint import two_drone_paths
 from srcloc_env.sensor.detector import Detector
@@ -105,7 +105,7 @@ from matplotlib.patches import Patch   # noqa: E402
 FILTERS = ("A", "A2", "B", "B2")
 FILTER_MODEL = {"A": "analytic", "A2": "analytic", "B": "adjoint", "B2": "adjoint"}
 FILTER_LABEL = {"A": "A analytic plume (eps 0.05)", "A2": "A2 analytic plume (eps 0.1)",
-                "B": "B LBM adjoint (eps 0.05)", "B2": "B2 LBM adjoint (eps 0.1)"}
+                "B": "B SPH adjoint (eps 0.05)", "B2": "B2 SPH adjoint (eps 0.1)"}
 # figure colours (dataviz palette slots 1 / 2 / 3 + neutral; identity = source type, A / B = tint + legend + hatch)
 TYPE_COLORS = {"open": "#2a78d6", "trapped": "#eb6834", "holdout": "#1baf7a", "train": "#8a8a8a"}
 FILTER_COLORS = {"A": "#2a78d6", "A2": "#2a78d6", "B": "#eb6834", "B2": "#eb6834"}
@@ -580,9 +580,9 @@ def make_figure(agg: dict[str, dict[str, dict]], runs: dict[str, dict[int, list[
     ax.set_xticks(x, [str(s) for s in sources], fontsize=8)
     ax.set_xlabel(f"true source (LDM slab truth, {truth_label}, z = {config.DRONE_Z:g} m)")
     ax.set_ylabel("final MAP error after 150 RL steps [m] (bar: median over seeds, whisker: p90)")
-    ax.set_title("A analytic plume (light) vs B LBM adjoint (solid); hatched = unobservable at 15 m", fontsize=9.5)
+    ax.set_title("A analytic plume (light) vs B SPH adjoint (solid); hatched = unobservable at 15 m", fontsize=9.5)
     handles = [Patch(facecolor=TYPE_COLORS[k], label=f"{k} source") for k in ("open", "trapped", "holdout", "train")]
-    handles += [Patch(facecolor="#555555", alpha=0.45, label="A: analytic plume"), Patch(facecolor="#555555", label="B: LBM adjoint"),
+    handles += [Patch(facecolor="#555555", alpha=0.45, label="A: analytic plume"), Patch(facecolor="#555555", label="B: SPH adjoint"),
                 Patch(facecolor="white", edgecolor="#555555", hatch=UNOBSERVABLE_HATCH, label="unobservable at 15 m")]
     ax.legend(handles=handles, loc="upper left", fontsize=7.5, frameon=False, ncol=2)
     ax.grid(True, axis="y", color="#e6e6e6", linewidth=0.6)
@@ -701,7 +701,7 @@ def main(argv: list[str] | None = None) -> dict:
         t0 = time.perf_counter()
         params = AdjointParams(K=args.adjoint_K, lam=args.adjoint_lam)
         op = AdvectionDiffusionOperator.from_data(params, WindField.load(), om).factorize()
-        models["adjoint"] = LbmAdjointModel(op)
+        models["adjoint"] = SphAdjointModel(op)
         setup["adjoint_seconds"] = time.perf_counter() - t0
         setup["adjoint_n_free"] = op.n_free
     print(f"[setup] filters {filters}, sources {sources}, seeds {args.n_seeds}, steps {args.n_steps}; mode {args.mode}; "

@@ -9,7 +9,7 @@ from srcloc_env.baselines.coverage import assign_groups, coverage_waypoints, mak
 from srcloc_env.baselines.policies import LawnmowerAlongWindPolicy, LawnmowerPolicy, make_policy
 from srcloc_env.env.multi_agent import MultiDroneEnv
 from srcloc_env.env.source_env import Scene, SourceLocEnv
-from srcloc_env.pf.lbm_adjoint import AdjointParams
+from srcloc_env.pf.sph_adjoint import AdjointParams
 from srcloc_env.preprocess.gridder import SlabGrid
 from tests.test_source_env import DOMAIN_X, DOMAIN_Y, SOURCES, SyntheticBackend, _obstacles, _wind
 

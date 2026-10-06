@@ -1,12 +1,12 @@
-"""D5-2: connect the LBM adjoint forward model (pf/lbm_adjoint.LbmAdjointModel, plan 4.2b option B-3) to the
+"""D5-2: connect the SPH adjoint forward model (pf/sph_adjoint.SphAdjointModel, plan 4.2b option B-3) to the
 RB-PF (pf/particle_filter.RBPF, plan 4.3) and validate speed and synthetic convergence (plan 4.2b 검증
-"갱신당 시간 <= 20 ms"; S1 T1-2 lite with the LBM model as truth; docs/lbm_forward_model.md section 5 step 4).
+"갱신당 시간 <= 20 ms"; S1 T1-2 lite with the SPH model as truth; docs/sph_forward_model.md section 5 step 4).
 
 Usage: python -m srcloc_env.scripts.validate_pf_adjoint [--seed 0] [--n-seeds 5] [--n-steps 150]
 Writes config.CACHE_DIR / validate_pf_adjoint.json and config.FIG_DIR / fig_pf_adjoint_convergence.png
 (config.FIG_DPI_FINAL) + _preview.png (config.FIG_DPI_PREVIEW).
 
-(1) Timing (plan 4.2b): RBPF(forward=LbmAdjointModel(operator from the real data at z = config.DRONE_Z, default
+(1) Timing (plan 4.2b): RBPF(forward=SphAdjointModel(operator from the real data at z = config.DRONE_Z, default
     AdjointParams), N = config.PF_N_PARTICLES, mode = "grid", obstacles = ObstacleMap.load()).  update() is timed
     along the two-drone lawnmower of source 109: pass 1 visits a new receptor position every step (psi LRU miss
     -> adjoint solve + interpolation + likelihood), pass 2 revisits the same positions (LRU hit -> interpolation
@@ -23,7 +23,7 @@ Writes config.CACHE_DIR / validate_pf_adjoint.json and config.FIG_DIR / fig_pf_a
     y zig-zags with the same step over a band of width config.PF_ADJ_SWEEP_WIDTH_M; the two bands are adjacent
     (y_s +- width / 2).  Waypoints that are not free at z (ObstacleMap.is_free, 2 m margin) or outside the PF
     prior box are skipped (dropped from the sequence); when the pattern runs out of free waypoints the drone
-    hovers at its last free one.  RBPF with the same LbmAdjointModel, N = config.PF_N_PARTICLES, config.PF_ADJ_N_SEEDS
+    hovers at its last free one.  RBPF with the same SphAdjointModel, N = config.PF_N_PARTICLES, config.PF_ADJ_N_SEEDS
     seeds; per run: MAP error (map_estimate, weighted mode) after config.PF_ADJ_REPORT_STEPS steps, N_eff after
     every update, entropy_xy trajectory, kappa posterior quantiles vs kappa_true, number of resamples.
     Expected: open sources (109, 101, 113) median MAP error < config.PF_ADJ_MAP_ERROR_PASS_M after 150 steps;
@@ -50,7 +50,7 @@ import numpy as np
 from srcloc_env import config
 from srcloc_env.env.drone import ObstacleMap
 from srcloc_env.field.wind import WindField
-from srcloc_env.pf.lbm_adjoint import AdjointParams, AdvectionDiffusionOperator, LbmAdjointModel
+from srcloc_env.pf.sph_adjoint import AdjointParams, AdvectionDiffusionOperator, SphAdjointModel
 from srcloc_env.pf.particle_filter import RBPF
 from srcloc_env.sensor.detector import Detector
 
@@ -184,7 +184,7 @@ def courtyard_report(op: AdvectionDiffusionOperator, om: ObstacleMap, source_xy:
 
 
 # ---------------------------------------------------------------------------------------- PF run
-def run_pf(model: LbmAdjointModel, om: ObstacleMap, truth: SyntheticTruth, paths: np.ndarray,
+def run_pf(model: SphAdjointModel, om: ObstacleMap, truth: SyntheticTruth, paths: np.ndarray,
            seed: int, n_particles: int = config.PF_N_PARTICLES,
            report_steps: tuple[int, ...] = config.PF_ADJ_REPORT_STEPS) -> dict:
     """One synthetic episode: counts from ``truth`` along ``paths`` (n_steps, n_drones, 2), sequential RBPF
@@ -243,7 +243,7 @@ def _stats(t: np.ndarray) -> dict[str, float]:
             "p99_s": float(np.percentile(t, 99)), "max_s": float(t.max())}
 
 
-def timing_section(model: LbmAdjointModel, om: ObstacleMap, truth: SyntheticTruth, paths: np.ndarray,
+def timing_section(model: SphAdjointModel, om: ObstacleMap, truth: SyntheticTruth, paths: np.ndarray,
                    seed: int) -> dict:
     """update() wall time along the lawnmower: pass 1 (LRU misses) and pass 2 (hits) + component breakdown."""
     op = model.operator
@@ -397,7 +397,7 @@ def make_figure(runs: dict[int, list[dict]], truths: dict[int, SyntheticTruth], 
     for sp in ("top", "right"):
         ax.spines[sp].set_visible(False)
     p = op.params
-    fig.suptitle(f"RB-PF with the LBM adjoint forward model as truth (z = {p.z:.0f} m, K = {p.K} m^2/s, "
+    fig.suptitle(f"RB-PF with the SPH adjoint forward model as truth (z = {p.z:.0f} m, K = {p.K} m^2/s, "
                  f"lambda = {p.lam} 1/s, N = {config.PF_N_PARTICLES}, kappa_true = {config.KAPPA_REF:.3g})", fontsize=11)
     path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(path, dpi=config.FIG_DPI_FINAL)
@@ -419,7 +419,7 @@ def main(argv: list[str] | None = None) -> dict:
     om = ObstacleMap.load()
     params = AdjointParams()
     op = AdvectionDiffusionOperator.from_data(params, wf, om).factorize()
-    model = LbmAdjointModel(op)
+    model = SphAdjointModel(op)
     setup_s = time.perf_counter() - t0
     det = Detector()
 

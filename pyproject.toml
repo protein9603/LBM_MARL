@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "srcloc_env"
 version = "0.1.0"
-description = "Multi-drone radiological source-term estimation on high-fidelity LBM/LDM urban dispersion data: sensor model, Rao-Blackwellised particle filter, GMM belief summary and multi-agent RL environment"
+description = "Multi-drone radiological source-term estimation on high-fidelity SPH/LDM urban dispersion data: sensor model, Rao-Blackwellised particle filter, GMM belief summary and multi-agent RL environment"
 readme = "README.md"
 requires-python = ">=3.12"
 authors = [{ name = "jh_lee" }]

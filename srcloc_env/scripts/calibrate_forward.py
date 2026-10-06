@@ -11,8 +11,8 @@ truth   per-source airborne slab density n_LDM(x, y) [particles/m^3] of frame in
 model   g(theta_s, p) = GaussianPlume.unit_response for the single source position config.SOURCES_XY[s]
         (N = 1) at every slab cell centre (M = 41,400 receptors, drone z = DRONE_Z), for each combination of
         U in config.FWD_U_CANDIDATES x sigma_v in config.FWD_SIGMA_V_CANDIDATES x wind_mode in
-        config.FWD_WIND_MODES ('global': params.U along +x; 'local': the LBM wind at the source, plan S1 보강).
-        NOTE: with the default local_wind_blend = 1 the 'local' mode takes U_i from the LBM field and ignores
+        config.FWD_WIND_MODES ('global': params.U along +x; 'local': the SPH wind at the source, plan S1 보강).
+        NOTE: with the default local_wind_blend = 1 the 'local' mode takes U_i from the SPH field and ignores
         params.U, so its three U rows are identical by construction (only sigma_v varies); they are kept so
         that the table has the full 18 rows the plan asks for.
 cells   DOWNWIND cells only, d > 0 with respect to the model's wind direction at the source (the local
@@ -212,7 +212,7 @@ def evaluate_sources(plume: GaussianPlume, src_xy: np.ndarray, cells_xyz: np.nda
 
     src_xy (n, 2), cells_xyz (M, 3) receptors (cell centres at DRONE_Z), slabs (n, M) truth densities.
     d is measured along the plume's wind direction at each source (plume.local_wind: the global +x in
-    wind_mode='global', the LBM direction in 'local'), which is exactly the direction that defines g's d <= 0 floor.
+    wind_mode='global', the SPH direction in 'local'), which is exactly the direction that defines g's d <= 0 floor.
     """
     src = np.asarray(src_xy, dtype=np.float64).reshape(-1, 2)
     cells = np.asarray(cells_xyz, dtype=np.float64).reshape(-1, 3)
@@ -512,7 +512,7 @@ def main(argv: list[str] | None = None) -> dict:
                        "wind_mode": list(config.FWD_WIND_MODES)},
         "selection_rule": "argmin over rows of mean_{train} std(rho'); downwind cells n_LDM > 0, d > 0, "
                           f"g > {config.T1_3_G_FLOOR_FACTOR:g} * g_floor",
-        "notes": ["'local' rows: with local_wind_blend = 1 the per-source U_i comes from the LBM field and params.U "
+        "notes": ["'local' rows: with local_wind_blend = 1 the per-source U_i comes from the SPH field and params.U "
                   "is ignored, so the three U rows of each sigma_v are identical by construction (3 distinct rows).",
                   f"informational columns *_dense use cells with n_LDM > {config.T1_3_INFO_DENSITY_FRACTION:g} x source max "
                   "(above the single-particle fringe); mass_weighted_std weights rho' by n_LDM. Neither is the plan's selection statistic.",

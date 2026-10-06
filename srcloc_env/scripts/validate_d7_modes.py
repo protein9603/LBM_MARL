@@ -8,7 +8,7 @@ Usage: python -m srcloc_env.scripts.validate_d7_modes [--seed 0] [--n-seeds 3] [
 Writes config.CACHE_DIR / validate_d7_modes.json and config.FIG_DIR / fig_d7_modes.png (config.FIG_DPI_FINAL) +
 _preview.png (config.FIG_DPI_PREVIEW).
 
-Filter (B only, the policy-training default of validation_log 전방모델 결정): RBPF(LbmAdjointModel(
+Filter (B only, the policy-training default of validation_log 전방모델 결정): RBPF(SphAdjointModel(
 AdvectionDiffusionOperator.from_data(AdjointParams(K = config.T1_4_ADJOINT_K, lam = config.T1_4_ADJOINT_LAM))
 factorised once and shared), N = config.PF_N_PARTICLES, grid mode, eps_mix = config.T1_4_FILTER_EPS['B'], PF rng
 [seed, 2]) with likelihood 'poisson' (R3) or 'negbin' with r in config.D7_2_NB_R_GRID (Gamma-Poisson, R22 / R23;
@@ -50,7 +50,7 @@ from srcloc_env import config
 from srcloc_env.env.drone import ObstacleMap
 from srcloc_env.field.concentration_field import LdmSlabBackend
 from srcloc_env.field.wind import WindField
-from srcloc_env.pf.lbm_adjoint import AdjointParams, AdvectionDiffusionOperator, LbmAdjointModel
+from srcloc_env.pf.sph_adjoint import AdjointParams, AdvectionDiffusionOperator, SphAdjointModel
 from srcloc_env.pf.particle_filter import RBPF
 from srcloc_env.scripts.validate_pf_adjoint import two_drone_paths
 from srcloc_env.scripts.validate_t1_4 import (aggregate, frame_schedule_mode_t, generate_measurements, mode_schedule,
@@ -226,7 +226,7 @@ def make_figure(agg: dict[str, dict[str, dict]], sources: Sequence[int], setting
     handles = [Patch(facecolor=SETTING_COLORS[j % len(SETTING_COLORS)], label=st["label"]) for j, st in enumerate(settings)]
     handles.append(Patch(facecolor="white", edgecolor="#555555", hatch=REGRESSION_HATCH, label="regression source"))
     axes[0][0].legend(handles=handles, loc="upper left", fontsize=8, frameon=False, ncol=2)
-    fig.suptitle(f"D7-2: filter B (LBM adjoint K {config.T1_4_ADJOINT_K:g} / lambda {config.T1_4_ADJOINT_LAM:g}), "
+    fig.suptitle(f"D7-2: filter B (SPH adjoint K {config.T1_4_ADJOINT_K:g} / lambda {config.T1_4_ADJOINT_LAM:g}), "
                  f"Poisson vs negative-binomial likelihood, N = {config.PF_N_PARTICLES}, {config.D7_2_N_SEEDS} seeds; "
                  "Mode T is a different (time-varying) truth - panels are not comparable on one axis", fontsize=10.5)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -261,7 +261,7 @@ def main(argv: list[str] | None = None) -> dict:
     det = Detector()
     t0 = time.perf_counter()
     op = AdvectionDiffusionOperator.from_data(AdjointParams(K=config.T1_4_ADJOINT_K, lam=config.T1_4_ADJOINT_LAM), WindField.load(), om).factorize()
-    model = LbmAdjointModel(op)
+    model = SphAdjointModel(op)
     setup = {"adjoint_seconds": time.perf_counter() - t0, "adjoint_n_free": op.n_free}
     print(f"[setup] configs {keys}; sources {sources} (open {open_sources}, regression {regression_sources}); "
           f"seeds {args.n_seeds}, steps {args.n_steps}; adjoint {setup['adjoint_seconds']:.1f} s", flush=True)

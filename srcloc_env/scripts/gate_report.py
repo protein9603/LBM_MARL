@@ -57,7 +57,7 @@ def g0() -> dict:
             "criterion": "< 1e-4 s"},
         "wind field reproduction": {"pass": bool(wind and wind.get("pass")), "criterion": "report 3.3 means within 1e-3"},
         "obstacle map": {"pass": bool(drone and drone.get("pass", drone.get("overall_pass", True))), "criterion": "13 sources free at 15 m, superset of stl_tools"},
-        "STL/LBM alignment": {"pass": bool(align and align["best_integer_shift_cells_(dix,diy)"] == [0, 0] and align["jaccard_occ_vs_ib_footprint_2p5m"] > 0.9),
+        "STL/SPH alignment": {"pass": bool(align and align["best_integer_shift_cells_(dix,diy)"] == [0, 0] and align["jaccard_occ_vs_ib_footprint_2p5m"] > 0.9),
                               "jaccard": align and align["jaccard_occ_vs_ib_footprint_2p5m"], "criterion": "best shift (0,0), Jaccard > 0.9"},
     }
     ok = all(v["pass"] for v in items.values())

@@ -1,6 +1,6 @@
-"""Unit tests for the PF <-> LBM adjoint connection (plan 4.2b option B-3, docs/lbm_forward_model.md section 5
+"""Unit tests for the PF <-> SPH adjoint connection (plan 4.2b option B-3, docs/sph_forward_model.md section 5
 step 4; D5-2) on a synthetic 40 x 30 operator only (AdvectionDiffusionOperator.from_arrays, uniform wind + one
-wall): RBPF with LbmAdjointModel converges to a synthetic source (MAP error < config.PF_ADJ_TEST_MAP_ERROR_CELLS
+wall): RBPF with SphAdjointModel converges to a synthetic source (MAP error < config.PF_ADJ_TEST_MAP_ERROR_CELLS
 cells after config.PF_ADJ_TEST_N_MEASUREMENTS measurements), unit_response shape / LRU behaviour along a path,
 RBPF unchanged (duck-typed forward model, grid and nb paths), and the lawnmower path generator of
 scripts/validate_pf_adjoint.py on a synthetic ObstacleMap.  References R3, R5, R17."""
@@ -9,7 +9,7 @@ import pytest
 
 from srcloc_env import config
 from srcloc_env.env.drone import ObstacleMap
-from srcloc_env.pf.lbm_adjoint import AdjointParams, AdvectionDiffusionOperator, LbmAdjointModel
+from srcloc_env.pf.sph_adjoint import AdjointParams, AdvectionDiffusionOperator, SphAdjointModel
 from srcloc_env.pf.particle_filter import RBPF
 from srcloc_env.preprocess.gridder import SlabGrid
 from srcloc_env.scripts.validate_pf_adjoint import SyntheticTruth, lawnmower_path, two_drone_paths
@@ -50,11 +50,11 @@ def sweep_path(op: AdvectionDiffusionOperator, n: int) -> np.ndarray:
     return pts[:n]
 
 
-def test_rbpf_converges_with_lbm_adjoint_model():
+def test_rbpf_converges_with_sph_adjoint_model():
     """MAP error < PF_ADJ_TEST_MAP_ERROR_CELLS cells after PF_ADJ_TEST_N_MEASUREMENTS measurements (truth =
     solve_forward(true) x kappa_true, counts via Detector; no model mismatch)."""
     op = make_operator()
-    model = LbmAdjointModel(op)
+    model = SphAdjointModel(op)
     det = Detector()
     field = op.solve_forward(np.array(TRUE_XY))
     kappa_true = COUNTS_MAX_TEST / field.max()
@@ -82,7 +82,7 @@ def test_rbpf_converges_with_lbm_adjoint_model():
 def test_unit_response_shape_and_lru_along_path():
     """(N, M) shapes; a path of distinct receptors misses once each, revisiting the cached tail hits."""
     op = make_operator()
-    model = LbmAdjointModel(op, max_cached=8)
+    model = SphAdjointModel(op, max_cached=8)
     rng = np.random.default_rng(5)
     src = np.column_stack([rng.uniform(5.0, 195.0, 25), rng.uniform(5.0, 145.0, 25)])
     path = sweep_path(op, 12)
@@ -119,10 +119,10 @@ def test_unit_response_shape_and_lru_along_path():
 
 
 def test_rbpf_paths_unchanged_grid_and_nb():
-    """RBPF grid and nb (b = 0) paths both accept LbmAdjointModel; the grid path with a fine Gamma prior matches
+    """RBPF grid and nb (b = 0) paths both accept SphAdjointModel; the grid path with a fine Gamma prior matches
     the NB closed form on one update (T1-1 style check, R6) - no change in particle_filter.py needed."""
     op = make_operator()
-    model = LbmAdjointModel(op)
+    model = SphAdjointModel(op)
     rng = np.random.default_rng(3)
     xy = np.column_stack([rng.uniform(5.0, 195.0, 40), rng.uniform(5.0, 145.0, 40)])
     kw = dict(n_particles=40, prior_x=(0.0, 200.0), prior_y=(0.0, 150.0), eps_mix=0.0, background=0.0,

@@ -34,7 +34,7 @@ from scipy.sparse.linalg import spsolve
 from srcloc_env import config
 from srcloc_env.env.drone import ObstacleMap
 from srcloc_env.field.wind import WindField
-from srcloc_env.pf.lbm_adjoint import AdvectionDiffusionOperator
+from srcloc_env.pf.sph_adjoint import AdvectionDiffusionOperator
 from srcloc_env.preprocess.gridder import SlabGrid
 
 

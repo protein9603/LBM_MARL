@@ -21,7 +21,7 @@ import numpy as np
 from srcloc_env import config
 from srcloc_env.env.source_env import Scene
 from srcloc_env.field.wind_models import potential_flow_diagnostics
-from srcloc_env.pf.lbm_adjoint import AdvectionDiffusionOperator
+from srcloc_env.pf.sph_adjoint import AdvectionDiffusionOperator
 from srcloc_env.pf.particle_filter import RBPF
 from srcloc_env.sensor.detector import Detector
 

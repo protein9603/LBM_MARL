@@ -12,7 +12,7 @@ from srcloc_env.env.drone import ACTION_STAY, ObstacleMap
 from srcloc_env.env.source_env import Scene, SourceLocEnv
 from srcloc_env.field.wind import WindField
 from srcloc_env.pf.gmm_summary import GmmSummary
-from srcloc_env.pf.lbm_adjoint import AdjointParams
+from srcloc_env.pf.sph_adjoint import AdjointParams
 from srcloc_env.preprocess.gridder import SlabGrid
 
 DOMAIN_X, DOMAIN_Y = (0.0, 200.0), (-75.0, 75.0)

@@ -1,4 +1,4 @@
-"""Unit tests for the LBM wind lookup (synthetic lattices only, no raw data)."""
+"""Unit tests for the SPH wind lookup (synthetic lattices only, no raw data)."""
 import numpy as np
 import pytest
 

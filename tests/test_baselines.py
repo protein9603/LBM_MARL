@@ -13,7 +13,7 @@ from srcloc_env.eval.episodes import EpisodeSpec, load_episode_list, make_episod
 from srcloc_env.eval.metrics import aggregate, bootstrap_median_ci, paired_differences, table2_markdown, wilson_ci
 from srcloc_env.eval.run_eval import run_episode
 from srcloc_env.pf.gmm_summary import GmmSummary
-from srcloc_env.pf.lbm_adjoint import AdjointParams
+from srcloc_env.pf.sph_adjoint import AdjointParams
 from srcloc_env.preprocess.gridder import SlabGrid
 from tests.test_source_env import DOMAIN_X, DOMAIN_Y, SOURCES, SyntheticBackend, _obstacles, _wind
 

@@ -1,8 +1,8 @@
-"""LBM wind lookup for the drones and the PF forward model (plan D2, report 3.1-3.6).
+"""SPH wind lookup for the drones and the PF forward model (plan D2, report 3.1-3.6).
 
 Data
 ----
-``levels_uvw.npz`` (config.LEVELS_UVW_NPZ) holds (u, v, w) of the LBM flow field on 19 z-levels
+``levels_uvw.npz`` (config.LEVELS_UVW_NPZ) holds (u, v, w) of the SPH flow field on 19 z-levels
 (1.25 ... 371.25 m) of the native 2.5 m lattice, ``fluid_slices_2p5m.npz`` (config.FLUID_SLICES_NPZ)
 holds 7 low levels (1.25 ... 21.25 m) plus ``building_mask`` and ``building_height_max`` rasterised from
 the p_type == 1000 building-surface points onto the same lattice (report 3.6, 4.2).
@@ -47,7 +47,7 @@ from srcloc_env import config
 
 
 class WindField:
-    """Mean-wind lookup on the LBM lattice; float32 storage (~85 MB for the 19 levels)."""
+    """Mean-wind lookup on the SPH lattice; float32 storage (~85 MB for the 19 levels)."""
 
     def __init__(self, x: np.ndarray, y: np.ndarray, z_levels: np.ndarray, uvw: np.ndarray,
                  building_mask: np.ndarray | None = None, building_height: np.ndarray | None = None) -> None:

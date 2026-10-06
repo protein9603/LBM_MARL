@@ -74,7 +74,7 @@ from srcloc_env import config  # noqa: E402
 from srcloc_env.env.drone import ObstacleMap  # noqa: E402
 from srcloc_env.field.concentration_field import LdmSlabBackend  # noqa: E402
 from srcloc_env.field.wind import WindField  # noqa: E402
-from srcloc_env.pf.lbm_adjoint import AdjointParams, AdvectionDiffusionOperator  # noqa: E402
+from srcloc_env.pf.sph_adjoint import AdjointParams, AdvectionDiffusionOperator  # noqa: E402
 from srcloc_env.preprocess.gridder import SlabGrid  # noqa: E402
 from srcloc_env.scripts import calibrate_adjoint as ca  # noqa: E402
 from srcloc_env.scripts import calibrate_forward as cf  # noqa: E402
@@ -322,7 +322,7 @@ def render_figure(grid: SlabGrid, omap: ObstacleMap, s: int, inst: np.ndarray, m
         ax.annotate("", xy=(xs + L * np.cos(a), ys + L * np.sin(a)), xytext=(xs, ys), zorder=8,
                     arrowprops=dict(arrowstyle="-|>", lw=1.8, color="black", shrinkA=0, shrinkB=0))
         ax.text(xs + 0.5 * L * np.cos(a), ys + 0.5 * L * np.sin(a) - 14,
-                f"LBM wind at source {wind['speed']:.2f} m/s, {wind['dir_deg']:.0f} deg", fontsize=7.5, ha="center",
+                f"SPH wind at source {wind['speed']:.2f} m/s, {wind['dir_deg']:.0f} deg", fontsize=7.5, ha="center",
                 va="top", zorder=8, path_effects=[pe.withStroke(linewidth=2.0, foreground="white")])
         x0, x1, y0, y1 = ca._window(xs, ys, grid)
         ax.set_xlim(x0, x1)

@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from srcloc_env import config
-from srcloc_env.pf.lbm_adjoint import AdjointParams, AdvectionDiffusionOperator
+from srcloc_env.pf.sph_adjoint import AdjointParams, AdvectionDiffusionOperator
 from srcloc_env.preprocess.gridder import SlabGrid
 from srcloc_env.scripts import calibrate_adjoint as ca
 

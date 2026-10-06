@@ -1,8 +1,8 @@
-"""D4-2 validation of GaussianPlume(wind_mode='local') on the real LBM wind field and slab cache (plan S1 보강 / 4.2).
+"""D4-2 validation of GaussianPlume(wind_mode='local') on the real SPH wind field and slab cache (plan S1 보강 / 4.2).
 
 Usage: python -m srcloc_env.scripts.validate_forward_local [--index 599] [--n-calls 100]
 Writes config.CACHE_DIR / validate_forward_local.json.  Reported only (calibration is D4-3 / T1-3):
-  * for the sources config.FWD_VALIDATE_SOURCES (109 open, 110 trapped; report 2.6): the local LBM wind
+  * for the sources config.FWD_VALIDATE_SOURCES (109 open, 110 trapped; report 2.6): the local SPH wind
     (u, v) at the source position and z = config.FWD_LOCAL_WIND_Z (= 15 m drone slab), its speed, the clipped
     U_i = max(|uv|, FWD_U_MIN), the direction, and for reference the report-2.6 near-source box mean speed
     (config.WIND_REF_SOURCE_SPEED) and the global (U, dir) of ForwardParams;

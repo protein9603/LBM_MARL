@@ -1,4 +1,4 @@
-"""Plan S0 deliverable figures 1-2: LBM/LDM scene overview and per-source slab statistics.
+"""Plan S0 deliverable figures 1-2: SPH/LDM scene overview and per-source slab statistics.
 
 Usage:
     python -m srcloc_env.scripts.fig_scene [--frame 599] [--out-dir <FIG_DIR>] [--json <CACHE_DIR>/fig_scene_numbers.json]
@@ -55,7 +55,7 @@ COLOR_HL_MAX = "#1f4e9c"        # highlighted source 'max'
 COLOR_HL_MEAN = "#7fa8e0"       # highlighted source 'mean non-zero'
 CMAP_DENSITY = LinearSegmentedColormap.from_list("blues_trunc", plt.get_cmap("Blues")(np.linspace(0.25, 1.0, 256)))
 CMAP_BUILDING = LinearSegmentedColormap.from_list("greys_trunc", plt.get_cmap("Greys")(np.linspace(0.3, 1.0, 256)))
-FIG1_TITLE = "LBM urban wind field + LDM dispersion, step {step} (airborne particles, x < {xout:.0f} m)"
+FIG1_TITLE = "SPH urban wind field + LDM dispersion, step {step} (airborne particles, x < {xout:.0f} m)"
 
 
 # ------------------------------------------------------------------------------------------ building map

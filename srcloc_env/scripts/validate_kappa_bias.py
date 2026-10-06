@@ -10,11 +10,11 @@ Design (plan T1-2, followed with the D5-3 choices recorded in config)
 truth   generated from the SAME forward model as the filter (no model mismatch) for config.T1_2_CASES:
         (a) GaussianPlume(wind_mode='global', ForwardParams() = config defaults, plan 4.2, R13 / R15) with the true
             source at config.SOURCES_XY[109] and, as a second case, [101];
-        (b) LbmAdjointModel on the real LBM wind at z = config.DRONE_Z with the default AdjointParams (plan 4.2b,
+        (b) SphAdjointModel on the real SPH wind at z = config.DRONE_Z with the default AdjointParams (plan 4.2b,
             R17 / R18), true source 109.
         The unit response of the truth is model.unit_response(true_xy, drones) - exactly what a filter particle
         sitting at the true position would compute (for the adjoint model this is the interpolated psi, section 5
-        step 4 of docs/lbm_forward_model.md, so the filter's own approximation is part of the truth).
+        step 4 of docs/sph_forward_model.md, so the filter's own approximation is part of the truth).
 kappa   kappa_true ~ log-uniform config.KAPPA_REF x 10^[-T1_2_KAPPA_TRUE_DECADES, +T1_2_KAPPA_TRUE_DECADES] per
         repeat (config.T1_2_N_REPEATS = 20 repeats, seeded); q_true = kappa_true / k0 so that the Detector draws
         y ~ Poisson((kappa_true g + b) T) (plan 4.1 / 4.3, R3; b = config.SENSOR_BACKGROUND_CPS = 20 cps).
@@ -35,7 +35,7 @@ filters (all N = config.PF_N_PARTICLES, mode='grid', same PF seed, obstacles = O
         round-off (RBPF rejects n_grid = 1 / grid_decades = 0; ``make_filter``).
 metrics per repeat and filter after the 200 measurements: MAP error |MAP - true| [m] (RBPF.map_estimate, weighted
         mode), the signed downwind bias (MAP - true) . e_x [m] (projection on +x, the domain mean wind, report 3.3;
-        the LBM direction at the source is recorded for information), the y offset, the posterior-mean error, the
+        the SPH direction at the source is recorded for information), the y offset, the posterior-mean error, the
         posterior spread sqrt(trace cov), the kappa posterior quantiles (median / kappa_true is the kappa-recovery
         statistic of (ii)), N_eff, resample count, and the MAP error after config.T1_2_REPORT_MEASUREMENTS
         measurements.  Per repeat also |MAP_xy(ii) - MAP_xy(i)| (distance between the two estimates) and
@@ -87,7 +87,7 @@ from srcloc_env import config
 from srcloc_env.env.drone import ObstacleMap
 from srcloc_env.field.wind import WindField
 from srcloc_env.pf.forward_model import GaussianPlume
-from srcloc_env.pf.lbm_adjoint import AdjointParams, AdvectionDiffusionOperator, LbmAdjointModel
+from srcloc_env.pf.sph_adjoint import AdjointParams, AdvectionDiffusionOperator, SphAdjointModel
 from srcloc_env.pf.particle_filter import ForwardModel, RBPF
 from srcloc_env.scripts.validate_pf_adjoint import two_drone_paths
 from srcloc_env.sensor.detector import Detector
@@ -108,7 +108,7 @@ FILTER_COLORS: dict[str, str] = {"kappa_known": "#2a78d6", "rbpf_grid": "#eb6834
 INK = "#222222"
 INK_MUTED = "#8a8a8a"
 GRID_COLOR = "#e6e6e6"
-MODEL_LABELS = {"analytic": "Gaussian plume (global wind)", "adjoint": "LBM adjoint (15 m wind)"}
+MODEL_LABELS = {"analytic": "Gaussian plume (global wind)", "adjoint": "SPH adjoint (15 m wind)"}
 
 
 # ---------------------------------------------------------------------------------------- building blocks
@@ -426,7 +426,7 @@ def main(argv: list[str] | None = None) -> dict:
     det = Detector()
     params = AdjointParams()
     op = AdvectionDiffusionOperator.from_data(params, wf, om).factorize()
-    models: dict[str, ForwardModel] = {"analytic": GaussianPlume(), "adjoint": LbmAdjointModel(op)}
+    models: dict[str, ForwardModel] = {"analytic": GaussianPlume(), "adjoint": SphAdjointModel(op)}
     setup_s = time.perf_counter() - t0
 
     cases: list[dict] = []
@@ -438,7 +438,7 @@ def main(argv: list[str] | None = None) -> dict:
                      likelihood=args.likelihood, nb_r=args.nb_r)
         uv = wf.uv_at(true_xy.reshape(1, 2), config.DRONE_Z)[0]
         c.update({"model": model_name, "source": int(src), "path_info": info, "wall_seconds": time.perf_counter() - t1,
-                  "lbm_wind_at_source_15m": {"u": float(uv[0]), "v": float(uv[1]), "speed": float(np.hypot(*uv)),
+                  "sph_wind_at_source_15m": {"u": float(uv[0]), "v": float(uv[1]), "speed": float(np.hypot(*uv)),
                                              "dir_deg": float(np.degrees(np.arctan2(uv[1], uv[0])))},
                   "min_path_distance_m": float(np.min(np.hypot(*(paths.reshape(-1, 2) - true_xy).T)))})
         cases.append(c)
