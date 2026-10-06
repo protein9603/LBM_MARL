@@ -336,3 +336,13 @@ def test_wind_level_is_trained_saved_and_checked_at_evaluation(scene, tmp_path, 
     with pytest.raises(ValueError, match="wind-level"):                                                        # resume without the flag is refused
         _run(["--run-name", "w0", "--procs", "0", "--n-steps", "32", "--out-root", str(tmp_path), "--no-ckpt-eval", "--n-drones", "2", "--total-steps", "64",
               "--obs-version", "v2", "--resume"], scene, monkeypatch)
+
+
+def test_reference_wind_options_reach_the_workers_and_the_checkpoint(scene, tmp_path, monkeypatch):
+    _run(["--run-name", "u54", "--procs", "0", "--n-steps", "32", "--out-root", str(tmp_path), "--no-ckpt-eval", "--n-drones", "2", "--total-steps", "32",
+          "--obs-version", "v2", "--wind-level", "W0", "--wind-u", "5.44", "--plume-sigma-v", "2.9"], scene, monkeypatch)
+    assert _FakePool.last_env_kw["wind_u"] == 5.44 and _FakePool.last_env_kw["plume_sigma_v"] == 2.9
+    ck = torch.load(tmp_path / "u54" / "final.pt", map_location="cpu", weights_only=False)
+    assert ck["env_kw"]["wind_u"] == 5.44 and ck["env_kw"]["plume_sigma_v"] == 2.9
+    pol = PPOPolicy(tmp_path / "u54" / "final.pt")
+    assert pol.meta["wind_u"] == 5.44

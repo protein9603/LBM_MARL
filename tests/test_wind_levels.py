@@ -148,3 +148,15 @@ def test_observation_wind_can_be_uniform_while_the_estimator_keeps_the_potential
     assert np.all(np.isfinite(obs))
     with pytest.raises(ValueError):
         Scene.build(wf, om, SyntheticBackend(), SOURCES, PARAMS, GRID, wind_level="W1", obs_wind="bogus")
+
+
+def test_plume_sigma_v_override_is_recorded_on_the_scene():
+    from srcloc_env.pf.forward_model import ForwardParams
+    om = _obstacles()
+    wf = uniform_wind_field(5.44, 0.0, x_range=DOMAIN_X, y_range=DOMAIN_Y)
+    sc = Scene.build(wf, om, SyntheticBackend(), SOURCES, PARAMS, GRID, wind_level="W0", wind_u=5.44, plume_params=ForwardParams(U=5.44, sigma_v=2.9))
+    assert np.isclose(sc.model.params.sigma_v, 2.9) and np.isclose(sc.model.params.U, 5.44) and np.isclose(sc.plume_sigma_v, 2.9) and np.isclose(sc.wind_u, 5.44)
+    r = sc.reflected_scene()
+    assert np.isclose(r.model.params.sigma_v, 2.9) and np.isclose(r.plume_sigma_v, 2.9)
+    sc1 = Scene.build(potential_flow_field(om, GRID, 5.44, 0.0), om, SyntheticBackend(), SOURCES, PARAMS, GRID, wind_level="W1", wind_u=5.44)
+    assert np.isnan(sc1.plume_sigma_v)

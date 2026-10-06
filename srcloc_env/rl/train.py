@@ -95,6 +95,12 @@ def train(a: argparse.Namespace) -> dict[str, Any]:
         env_kw["wind_level"] = str(a.wind_level)
     if str(a.obs_wind) != "model":
         env_kw["obs_wind"] = str(a.obs_wind)
+    if a.wind_u is not None:
+        env_kw["wind_u"] = float(a.wind_u)
+    if a.wind_dir is not None:
+        env_kw["wind_dir_deg"] = float(a.wind_dir)
+    if a.plume_sigma_v is not None:
+        env_kw["plume_sigma_v"] = float(a.plume_sigma_v)
     if a.sources:
         env_kw["sources"] = tuple(int(x) for x in a.sources)
     if a.start_plume_frac is not None:
@@ -260,6 +266,9 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--fail-cap-m", type=float, default=None, help="cap of the terminal failure error term in m (default 300; larger removes the saturation)")
     ap.add_argument("--wind-level", choices=list(config.WIND_LEVELS), default=config.WIND_LEVEL_DEFAULT, help="wind knowledge of the estimator (D13): W0 mean wind + Gaussian plume, W1 mean wind + building map, W2 CFD wind (default)")
     ap.add_argument("--obs-wind", choices=list(config.OBS_WIND_MODES), default="model", help="wind entries of the observation: from the estimator's wind field (model) or a uniform reference wind (uniform; D15 W1 diagnosis)")
+    ap.add_argument("--wind-u", type=float, default=None, help="reference wind speed [m/s] of the W0 / W1 estimator (default config.WIND_MEAN_U = 1.68; D19 uses the met-tower value 5.44)")
+    ap.add_argument("--wind-dir", type=float, default=None, help="reference wind direction [deg CCW from +x] of the W0 / W1 estimator")
+    ap.add_argument("--plume-sigma-v", type=float, default=None, help="W0 plume lateral turbulence velocity [m/s] (default config.WIND_PLUME_SIGMA_V = 0.9)")
     ap.add_argument("--sources", type=int, nargs="*", default=None, help="training sources (default config.TRAIN_SOURCES); the evaluation lists are unchanged")
     ap.add_argument("--start-plume-frac", type=float, default=None, help="probability that a drone starts inside the detectable plume region (default config.ENV_START_PLUME_FRAC)")
     ap.add_argument("--start-min-dist", type=float, default=None, help="minimum start distance from the source [m] (default 200)")

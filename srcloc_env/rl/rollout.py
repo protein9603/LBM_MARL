@@ -33,6 +33,8 @@ def make_train_env(scene: Scene, scene_reflected: Scene, n_drones: int, **kw: An
     kw = dict(kw)
     kw.pop("wind_level", None)                                               # scene options (load_scene), not environment options
     kw.pop("obs_wind", None)
+    for k in ("wind_u", "wind_dir_deg", "plume_sigma_v"):
+        kw.pop(k, None)
     opts.update(kw)
     opts.setdefault("max_steps", default_max_steps(opts["truth_mode"]))    # Mode T2: config.T2_MAX_STEPS (frames 400 + t stay inside the cache)
     return MultiDroneEnv(scene, n_drones=n_drones, **opts) if n_drones > 1 else SourceLocEnv(scene, **opts)
@@ -172,7 +174,8 @@ def net_payload(net: ActorCritic) -> dict[str, Any]:
 def _worker_main(conn, n_drones: int, run_seed: int, proc: int, episode_idx: int, env_kw: dict[str, Any]) -> None:   # noqa: ANN001
     torch.set_num_threads(1)
     try:
-        scene = load_scene(env_kw.get("truth_mode", "F"), env_kw.get("wind_level", config.WIND_LEVEL_DEFAULT), obs_wind=env_kw.get("obs_wind", "model"))
+        scene = load_scene(env_kw.get("truth_mode", "F"), env_kw.get("wind_level", config.WIND_LEVEL_DEFAULT), env_kw.get("wind_u"), env_kw.get("wind_dir_deg"),
+                           obs_wind=env_kw.get("obs_wind", "model"), plume_sigma_v=env_kw.get("plume_sigma_v"))
         env = make_train_env(scene, scene.reflected_scene(), n_drones, **env_kw)
         col = RolloutCollector(env, run_seed, proc, episode_idx)
         conn.send(("ready", proc))
@@ -202,7 +205,8 @@ class RolloutPool:
         self.conns: list[Any] = []
         self.local: RolloutCollector | None = None
         if self.n_procs == 0:
-            scene = load_scene(self.env_kw.get("truth_mode", "F"), self.env_kw.get("wind_level", config.WIND_LEVEL_DEFAULT), obs_wind=self.env_kw.get("obs_wind", "model"))
+            scene = load_scene(self.env_kw.get("truth_mode", "F"), self.env_kw.get("wind_level", config.WIND_LEVEL_DEFAULT), self.env_kw.get("wind_u"), self.env_kw.get("wind_dir_deg"),
+                               obs_wind=self.env_kw.get("obs_wind", "model"), plume_sigma_v=self.env_kw.get("plume_sigma_v"))
             env = make_train_env(scene, scene.reflected_scene(), self.n_drones, **self.env_kw)
             self.local = RolloutCollector(env, self.run_seed, 0, idx0[0])
         else:

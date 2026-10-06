@@ -39,7 +39,8 @@ def evaluate_checkpoint(ckpt: str | Path, out_csv: str | Path, n_per_source: int
         specs = specs[:limit]
     wind_level = str(ck.get("wind_level", config.WIND_LEVEL_DEFAULT))          # the estimator's wind knowledge the policy was trained with (D13)
     obs_wind = str(ck.get("obs_wind", "model"))
-    env = make_env(load_scene(mode, wind_level, obs_wind=obs_wind), n_drones, mode, max_steps, obs_version)
+    ekw = dict(ck.get("env_kw") or {})
+    env = make_env(load_scene(mode, wind_level, ekw.get("wind_u"), ekw.get("wind_dir_deg"), obs_wind=obs_wind, plume_sigma_v=ekw.get("plume_sigma_v")), n_drones, mode, max_steps, obs_version)
     t0 = time.perf_counter()
     recs = []
     seen: dict[int, int] = {}
